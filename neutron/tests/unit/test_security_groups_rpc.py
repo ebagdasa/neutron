@@ -2430,6 +2430,7 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
 
     def _device(self, device, ip, mac_address, rule):
         return {'device': device,
+                'id': '12345678-1234-aaaa-1234567890ab',
                 'fixed_ips': [ip],
                 'mac_address': mac_address,
                 'security_groups': ['security_group1'],

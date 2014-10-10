@@ -48,6 +48,23 @@ class BaseIptablesFirewallTestCase(base.BaseTestCase):
         self.utils_exec_p = mock.patch(
             'neutron.agent.linux.utils.execute')
         self.utils_exec = self.utils_exec_p.start()
+
+        def fake_execute(*args, **kwargs):
+            if args[0][0] == "ebtables" and args[0][2] == "filter":
+                return ('Bridge table: filter\n'
+                       '\n'
+                       'Bridge chain: INPUT, entries: 1, policy: ACCEPT\n'
+                       '-j CONTINUE , pcnt = 0 -- bcnt = 0\n'
+                       '\n'
+                       'Bridge chain: FORWARD, entries: 1, policy: ACCEPT\n'
+                       '-j CONTINUE , pcnt = 0 -- bcnt = 1\n'
+                       '\n'
+                       'Bridge chain: OUTPUT, entries: 1, policy: ACCEPT\n'
+                       '-j CONTINUE , pcnt = 1 -- bcnt = 1')
+            return ''
+
+        self.utils_exec.side_effect = fake_execute
+
         self.iptables_cls_p = mock.patch(
             'neutron.agent.linux.iptables_manager.IptablesManager')
         iptables_cls = self.iptables_cls_p.start()
@@ -65,7 +82,8 @@ class BaseIptablesFirewallTestCase(base.BaseTestCase):
 class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
 
     def _fake_port(self):
-        return {'device': 'tapfake_dev',
+        return {'id': '12345678-1234-aaaa-1234567890ab',
+                'device': 'tapfake_dev',
                 'mac_address': 'ff:ff:ff:ff:ff:ff',
                 'fixed_ips': [FAKE_IP['IPv4'],
                               FAKE_IP['IPv6']]}
@@ -1251,7 +1269,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
                                         mock.call.setup(device2port)])
 
     def test_ip_spoofing_filter_with_multiple_ips(self):
-        port = {'device': 'tapfake_dev',
+        port = {'id': '12345678-1234-aaaa-1234567890ab',
+                'device': 'tapfake_dev',
                 'mac_address': 'ff:ff:ff:ff:ff:ff',
                 'fixed_ips': ['10.0.0.1', 'fe80::1', '10.0.0.2']}
         self.firewall.prepare_port_filter(port)
@@ -1330,7 +1349,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         self.v4filter_inst.assert_has_calls(calls)
 
     def test_ip_spoofing_no_fixed_ips(self):
-        port = {'device': 'tapfake_dev',
+        port = {'id': '12345678-1234-aaaa-1234567890ab',
+                'device': 'tapfake_dev',
                 'mac_address': 'ff:ff:ff:ff:ff:ff',
                 'fixed_ips': []}
         self.firewall.prepare_port_filter(port)
@@ -1411,6 +1431,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
 
     def _fake_port(self):
         return {'device': 'tapfake_dev',
+                'id': '12345678-1234-aaaa-1234567890ab',
                 'mac_address': 'ff:ff:ff:ff:ff:ff',
                 'fixed_ips': [FAKE_IP['IPv4'],
                               FAKE_IP['IPv6']],
