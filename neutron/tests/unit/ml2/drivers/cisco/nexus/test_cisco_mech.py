@@ -879,6 +879,30 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
                     with _create_port(COMP_HOST_NAME_2, DEVICE_ID_2):
                         assert not self.mock_ncclient.connect.called
 
+    def test_nexus_vxlan_global_config(self):
+        """Test processing for adding/deleting VXLAN global switch values."""
+
+        # Set configuration variable to add/delete the VXLAN global nexus
+        # switch values.
+        cisco_config.cfg.CONF.set_override('vxlan_global_config', True,
+                                           'ml2_cisco')
+
+        # Configure bound segments to indicate VXLAN+VLAN.
+        self.mock_top_bound_segment.return_value = BOUND_SEGMENT_VXLAN
+        self.mock_bottom_bound_segment.return_value = BOUND_SEGMENT1
+
+        with self._create_resources():
+            self.assertTrue(self._is_in_nexus_cfg(['feature', 'overlay']))
+            self.assertTrue(self._is_in_nexus_cfg(['interface', 'nve']))
+            self.assertTrue(self._is_in_nexus_cfg(['source-interface',
+                                                   'loopback']))
+            self.mock_ncclient.reset_mock()
+
+        # Verify that VXLAN global entries have been removed.
+        # NB: The deleting of the "feature" commands also removes the NVE
+        # interface so no explict delete command is required.
+        self.assertTrue(self._is_in_nexus_cfg(['no', 'feature', 'overlay']))
+
     def test_nexus_vxlan_one_network(self):
         """Test processing for creating one VXLAN segment."""
 

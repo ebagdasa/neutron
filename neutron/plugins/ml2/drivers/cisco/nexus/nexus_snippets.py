@@ -250,6 +250,6 @@ CMD_FEATURE_VXLAN_SNIPPET = """
 # Removing the "feature nv overlay" configuration also removes the
 # "interface nve" configuration.
 CMD_NO_FEATURE_VXLAN_SNIPPET = """
-<feature>no feature vn-segment-vlan-based</feature>
 <feature>no feature nv overlay</feature>
+<feature>no feature vn-segment-vlan-based</feature>
 """

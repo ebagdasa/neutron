@@ -100,15 +100,17 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
         host_connections = self._get_switch_info(host_id)
 
         for switch_ip, intf_type, nexus_port in host_connections:
-            # If this is the first database entry for this switch_ip
-            # then configure the "interface nve" entry on the switch.
-            nve_bindings = nxos_db.get_nve_switch_bindings(switch_ip)
-            if len(nve_bindings) == 1:
-                LOG.debug("Nexus: create NVE interface")
-                loopback = self._nexus_switches.get(
-                    (switch_ip, 'nve_src_intf'), '0')
-                self.driver.enable_vxlan_feature(switch_ip, const.NVE_INT_NUM,
-                                                 loopback)
+            # If configured to set global VXLAN values then
+            #   If this is the first database entry for this switch_ip
+            #   then configure the "interface nve" entry on the switch.
+            if cfg.CONF.ml2_cisco.vxlan_global_config:
+                nve_bindings = nxos_db.get_nve_switch_bindings(switch_ip)
+                if len(nve_bindings) == 1:
+                    LOG.debug("Nexus: create NVE interface")
+                    loopback = self._nexus_switches.get(
+                                        (switch_ip, 'nve_src_intf'), '0')
+                    self.driver.enable_vxlan_feature(switch_ip,
+                                                 const.NVE_INT_NUM, loopback)
 
             # If this is the first database entry for this (VNI, switch_ip)
             # then configure the "member vni #" entry on the switch.
@@ -138,7 +140,8 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             if not nxos_db.get_nve_vni_switch_bindings(vni, switch_ip):
                 self.driver.delete_nve_member(switch_ip, const.NVE_INT_NUM,
                                               vni)
-            if not nxos_db.get_nve_switch_bindings(switch_ip):
+            if (cfg.CONF.ml2_cisco.vxlan_global_config and
+                not nxos_db.get_nve_switch_bindings(switch_ip)):
                 self.driver.disable_vxlan_feature(switch_ip)
 
     def _configure_nxos_db(self, vlan_id, device_id, host_id, vni,

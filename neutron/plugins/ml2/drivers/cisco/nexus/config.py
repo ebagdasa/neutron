@@ -31,6 +31,10 @@ ml2_cisco_opts = [
     cfg.BoolOpt('provider_vlan_auto_trunk', default=True,
         help=_('Provider VLANs are automatically trunked as needed '
                'on the ports of the Nexus switch')),
+    cfg.BoolOpt('vxlan_global_config', default=False,
+        help=_('Create and delete Nexus switch VXLAN global settings; '
+               'feature nv overlay, feature vn-segment-vlan-based, '
+               'interface nve + source-interface loopback')),
 ]
 
 
