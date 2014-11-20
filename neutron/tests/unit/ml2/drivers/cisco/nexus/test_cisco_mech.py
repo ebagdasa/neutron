@@ -457,7 +457,7 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
                         ))
 
                     # Return to first segment for delete port calls.
-                    self.mock_bound_segment.return_value = BOUND_SEGMENT1
+                    self.mock_top_bound_segment.return_value = BOUND_SEGMENT1
 
     def test_nexus_enable_vlan_cmd_on_different_hosts(self):
         """Verify the syntax of the command to enable a vlan on an intf.
@@ -486,7 +486,7 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
                         vlan_creation_expected=True,
                         first_vlan_addition=True))
                 self.mock_ncclient.reset_mock()
-                self.mock_bound_segment.return_value = BOUND_SEGMENT2
+                self.mock_top_bound_segment.return_value = BOUND_SEGMENT2
 
                 # Second vlan should be configured without the 'add' keyword
                 # when on second host.
