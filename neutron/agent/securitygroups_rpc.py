@@ -89,18 +89,16 @@ class SecurityGroupServerRpcApiMixin(object):
     def security_group_rules_for_devices(self, context, devices):
         LOG.debug("Get security group rules "
                   "for devices via rpc %r", devices)
-        return self.call(context,
-                         self.make_msg('security_group_rules_for_devices',
-                                       devices=devices),
-                         version='1.1')
+        cctxt = self.client.prepare(version='1.1')
+        return cctxt.call(context, 'security_group_rules_for_devices',
+                          devices=devices)
 
     def security_group_info_for_devices(self, context, devices):
         LOG.debug("Get security group information for devices via rpc %r",
                   devices)
-        return self.call(context,
-                         self.make_msg('security_group_info_for_devices',
-                                       devices=devices),
-                         version='1.2')
+        cctxt = self.client.prepare(version='1.2')
+        return cctxt.call(context, 'security_group_info_for_devices',
+                          devices=devices)
 
 
 class SecurityGroupAgentRpcCallbackMixin(object):
@@ -327,16 +325,20 @@ class SecurityGroupAgentRpcMixin(object):
         :param updated_devices: set containing identifiers for
         updated devices
         """
-        if new_devices:
-            LOG.debug("Preparing device filters for %d new devices",
-                      len(new_devices))
-            self.prepare_devices_filter(new_devices)
         # These data structures are cleared here in order to avoid
         # losing updates occurring during firewall refresh
         devices_to_refilter = self.devices_to_refilter
         global_refresh_firewall = self.global_refresh_firewall
         self.devices_to_refilter = set()
         self.global_refresh_firewall = False
+        # We must call prepare_devices_filter() after we've grabbed
+        # self.devices_to_refilter since an update for a new port
+        # could arrive while we're processing, and we need to make
+        # sure we don't skip it.  It will get handled the next time.
+        if new_devices:
+            LOG.debug("Preparing device filters for %d new devices",
+                      len(new_devices))
+            self.prepare_devices_filter(new_devices)
         # TODO(salv-orlando): Avoid if possible ever performing the global
         # refresh providing a precise list of devices for which firewall
         # should be refreshed
@@ -354,6 +356,10 @@ class SecurityGroupAgentRpcMixin(object):
                 self.refresh_firewall(updated_devices)
 
 
+# NOTE(russellb) This class has been conditionally converted to use the
+# oslo.messaging APIs because it's a mix-in used in different places.  The
+# conditional usage is temporary until the whole code base has been converted
+# to stop using the RpcProxy compatibility class.
 class SecurityGroupAgentRpcApiMixin(object):
 
     def _get_security_group_topic(self):
@@ -365,25 +371,45 @@ class SecurityGroupAgentRpcApiMixin(object):
         """Notify rule updated security groups."""
         if not security_groups:
             return
-        self.fanout_cast(context,
-                         self.make_msg('security_groups_rule_updated',
-                                       security_groups=security_groups),
-                         version=SG_RPC_VERSION,
-                         topic=self._get_security_group_topic())
+        if hasattr(self, 'client'):
+            cctxt = self.client.prepare(version=SG_RPC_VERSION,
+                                        topic=self._get_security_group_topic(),
+                                        fanout=True)
+            cctxt.cast(context, 'security_groups_rule_updated',
+                       security_groups=security_groups)
+        else:
+            self.fanout_cast(context,
+                             self.make_msg('security_groups_rule_updated',
+                                           security_groups=security_groups),
+                             version=SG_RPC_VERSION,
+                             topic=self._get_security_group_topic())
 
     def security_groups_member_updated(self, context, security_groups):
         """Notify member updated security groups."""
         if not security_groups:
             return
-        self.fanout_cast(context,
-                         self.make_msg('security_groups_member_updated',
-                                       security_groups=security_groups),
-                         version=SG_RPC_VERSION,
-                         topic=self._get_security_group_topic())
+        if hasattr(self, 'client'):
+            cctxt = self.client.prepare(version=SG_RPC_VERSION,
+                                        topic=self._get_security_group_topic(),
+                                        fanout=True)
+            cctxt.cast(context, 'security_groups_member_updated',
+                       security_groups=security_groups)
+        else:
+            self.fanout_cast(context,
+                             self.make_msg('security_groups_member_updated',
+                                           security_groups=security_groups),
+                             version=SG_RPC_VERSION,
+                             topic=self._get_security_group_topic())
 
     def security_groups_provider_updated(self, context):
         """Notify provider updated security groups."""
-        self.fanout_cast(context,
-                         self.make_msg('security_groups_provider_updated'),
-                         version=SG_RPC_VERSION,
-                         topic=self._get_security_group_topic())
+        if hasattr(self, 'client'):
+            cctxt = self.client.prepare(version=SG_RPC_VERSION,
+                                        topic=self._get_security_group_topic(),
+                                        fanout=True)
+            cctxt.cast(context, 'security_groups_member_updated')
+        else:
+            self.fanout_cast(context,
+                             self.make_msg('security_groups_provider_updated'),
+                             version=SG_RPC_VERSION,
+                             topic=self._get_security_group_topic())

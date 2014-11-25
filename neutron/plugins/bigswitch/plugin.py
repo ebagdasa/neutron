@@ -47,6 +47,7 @@ import re
 
 import eventlet
 from oslo.config import cfg
+from oslo import messaging
 from sqlalchemy.orm import exc as sqlexc
 
 from neutron.agent import securitygroups_rpc as sg_rpc
@@ -92,22 +93,18 @@ SYNTAX_ERROR_MESSAGE = _('Syntax error in server config file, aborting plugin')
 METADATA_SERVER_IP = '169.254.169.254'
 
 
-class AgentNotifierApi(n_rpc.RpcProxy,
-                       sg_rpc.SecurityGroupAgentRpcApiMixin):
-
-    BASE_RPC_API_VERSION = '1.1'
+class AgentNotifierApi(sg_rpc.SecurityGroupAgentRpcApiMixin):
 
     def __init__(self, topic):
-        super(AgentNotifierApi, self).__init__(
-            topic=topic, default_version=self.BASE_RPC_API_VERSION)
-        self.topic_port_update = topics.get_topic_name(
-            topic, topics.PORT, topics.UPDATE)
+        self.topic = topic
+        target = messaging.Target(topic=topic, version='1.0')
+        self.client = n_rpc.get_client(target)
 
     def port_update(self, context, port):
-        self.fanout_cast(context,
-                         self.make_msg('port_update',
-                                       port=port),
-                         topic=self.topic_port_update)
+        topic_port_update = topics.get_topic_name(self.client.target.topic,
+                                                  topics.PORT, topics.UPDATE)
+        cctxt = self.client.prepare(fanout=True, topic=topic_port_update)
+        cctxt.cast(context, 'port_update', port=port)
 
 
 class SecurityGroupServerRpcMixin(sg_db_rpc.SecurityGroupServerRpcMixin):
@@ -787,10 +784,13 @@ class NeutronRestProxyV2(NeutronRestProxyV2Base,
                 self.servers.rest_update_port(net_tenant_id,
                                               new_port["network_id"],
                                               mapped_port)
-            agent_update_required = self.update_security_group_on_port(
+            need_port_update_notify = self.update_security_group_on_port(
                 context, port_id, port, orig_port, new_port)
-        agent_update_required |= self.is_security_group_member_updated(
+        need_port_update_notify |= self.is_security_group_member_updated(
             context, orig_port, new_port)
+
+        if need_port_update_notify:
+            self.notifier.port_update(context, new_port)
 
         # return new_port
         return new_port
@@ -863,8 +863,6 @@ class NeutronRestProxyV2(NeutronRestProxyV2Base,
             self._send_update_network(orig_net, context)
             return new_subnet
 
-    # NOTE(kevinbenton): workaround for eventlet/mysql deadlock
-    @utils.synchronized('bsn-port-barrier')
     @put_context_in_serverpool
     def delete_subnet(self, context, id):
         LOG.debug(_("NeutronRestProxyV2: delete_subnet() called"))

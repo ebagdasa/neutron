@@ -283,14 +283,17 @@ def _get_subnet_id(port):
     return port['fixed_ips'][0]['subnet_id']
 
 
-def get_ha_interface():
+#TODO(jschwarz): This is a shared function with both the unit tests
+# and the functional tests, and should be moved elsewhere (probably
+# neutron/tests/common/).
+def get_ha_interface(ip='169.254.0.2', mac='12:34:56:78:2b:5d'):
     return {'admin_state_up': True,
             'device_id': _uuid(),
             'device_owner': 'network:router_ha_interface',
-            'fixed_ips': [{'ip_address': '169.254.0.2',
+            'fixed_ips': [{'ip_address': ip,
                            'subnet_id': _uuid()}],
             'id': _uuid(),
-            'mac_address': '12:34:56:78:2b:5d',
+            'mac_address': mac,
             'name': u'L3 HA Admin port 0',
             'network_id': _uuid(),
             'status': u'ACTIVE',
@@ -415,18 +418,18 @@ class TestBasicRouterOperations(base.BaseTestCase):
 
         return agent, ri, port
 
-    def test__sync_routers_task_raise_exception(self):
+    def test_periodic_sync_routers_task_raise_exception(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         self.plugin_api.get_routers.side_effect = Exception()
         with mock.patch.object(agent, '_cleanup_namespaces') as f:
-            agent._sync_routers_task(agent.context)
+            agent.periodic_sync_routers_task(agent.context)
         self.assertFalse(f.called)
 
-    def test__sync_routers_task_call_clean_stale_namespaces(self):
+    def test_periodic_sync_routers_task_call_clean_stale_namespaces(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         self.plugin_api.get_routers.return_value = []
         with mock.patch.object(agent, '_cleanup_namespaces') as f:
-            agent._sync_routers_task(agent.context)
+            agent.periodic_sync_routers_task(agent.context)
         self.assertTrue(f.called)
 
     def test_router_info_create(self):
@@ -796,15 +799,8 @@ class TestBasicRouterOperations(base.BaseTestCase):
         interface_name = ('qg-%s' % router['gw_port']['id'])[:14]
         expected_rules = [
             '! -i %s ! -o %s -m conntrack ! --ctstate DNAT -j ACCEPT' %
-            (interface_name, interface_name)]
-        for source_cidr in source_cidrs:
-            # Create SNAT rules for IPv4 only
-            if (netaddr.IPNetwork(source_cidr).version == 4 and
-                netaddr.IPNetwork(source_nat_ip).version == 4):
-                value_dict = {'source_cidr': source_cidr,
-                              'source_nat_ip': source_nat_ip}
-                expected_rules.append('-s %(source_cidr)s -j SNAT --to-source '
-                                      '%(source_nat_ip)s' % value_dict)
+            (interface_name, interface_name),
+            '-o %s -j SNAT --to-source %s' % (interface_name, source_nat_ip)]
         for r in rules:
             if negate:
                 self.assertNotIn(r.rule, expected_rules)
@@ -1333,18 +1329,11 @@ vrrp_instance VR_1 {
         agent.external_gateway_added = mock.Mock()
         # Process with NAT
         agent.process_router(ri)
-        orig_nat_rules = ri.iptables_manager.ipv4['nat'].rules[:]
         # Add an interface and reprocess
         router_append_interface(router)
         # Reassign the router object to RouterInfo
         ri.router = router
         agent.process_router(ri)
-        # For some reason set logic does not work well with
-        # IpTablesRule instances
-        nat_rules_delta = [r for r in ri.iptables_manager.ipv4['nat'].rules
-                           if r not in orig_nat_rules]
-        self.assertEqual(len(nat_rules_delta), 1)
-        self._verify_snat_rules(nat_rules_delta, router)
         # send_arp is called both times process_router is called
         self.assertEqual(self.send_arp.call_count, 2)
 
@@ -1440,7 +1429,6 @@ vrrp_instance VR_1 {
         agent.external_gateway_added = mock.Mock()
         # Process with NAT
         agent.process_router(ri)
-        orig_nat_rules = ri.iptables_manager.ipv4['nat'].rules[:]
         # Add an IPv4 and IPv6 interface and reprocess
         router_append_interface(router, count=1, ip_version=4)
         router_append_interface(router, count=1, ip_version=6)
@@ -1448,12 +1436,6 @@ vrrp_instance VR_1 {
         ri.router = router
         agent.process_router(ri)
         self._assert_ri_process_enabled(ri, 'radvd')
-        # For some reason set logic does not work well with
-        # IpTablesRule instances
-        nat_rules_delta = [r for r in ri.iptables_manager.ipv4['nat'].rules
-                           if r not in orig_nat_rules]
-        self.assertEqual(1, len(nat_rules_delta))
-        self._verify_snat_rules(nat_rules_delta, router)
 
     def test_process_router_interface_removed(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
@@ -1463,18 +1445,11 @@ vrrp_instance VR_1 {
         agent.external_gateway_added = mock.Mock()
         # Process with NAT
         agent.process_router(ri)
-        orig_nat_rules = ri.iptables_manager.ipv4['nat'].rules[:]
         # Add an interface and reprocess
         del router[l3_constants.INTERFACE_KEY][1]
         # Reassign the router object to RouterInfo
         ri.router = router
         agent.process_router(ri)
-        # For some reason set logic does not work well with
-        # IpTablesRule instances
-        nat_rules_delta = [r for r in orig_nat_rules
-                           if r not in ri.iptables_manager.ipv4['nat'].rules]
-        self.assertEqual(len(nat_rules_delta), 1)
-        self._verify_snat_rules(nat_rules_delta, router, negate=True)
         # send_arp is called both times process_router is called
         self.assertEqual(self.send_arp.call_count, 2)
 
@@ -1516,8 +1491,8 @@ vrrp_instance VR_1 {
             # The unexpected exception has been fixed manually
             internal_network_added.side_effect = None
 
-            # _sync_routers_task finds out that _rpc_loop failed to process the
-            # router last time, it will retry in the next run.
+            # periodic_sync_routers_task finds out that _rpc_loop failed to
+            # process the router last time, it will retry in the next run.
             agent.process_router(ri)
             # We were able to add the port to ri.internal_ports
             self.assertIn(
@@ -1547,8 +1522,8 @@ vrrp_instance VR_1 {
             # The unexpected exception has been fixed manually
             internal_net_removed.side_effect = None
 
-            # _sync_routers_task finds out that _rpc_loop failed to process the
-            # router last time, it will retry in the next run.
+            # periodic_sync_routers_task finds out that _rpc_loop failed to
+            # process the router last time, it will retry in the next run.
             agent.process_router(ri)
             # We were able to remove the port from ri.internal_ports
             self.assertNotIn(
@@ -1618,7 +1593,7 @@ vrrp_instance VR_1 {
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         with mock.patch.object(l3_agent.LOG, 'debug') as log_debug:
             agent._handle_router_snat_rules(
-                ri, mock.ANY, mock.ANY, mock.ANY, mock.ANY)
+                ri, mock.ANY, mock.ANY, mock.ANY)
         self.assertIsNone(ri.snat_iptables_manager)
         self.assertFalse(ri.iptables_manager.called)
         self.assertTrue(log_debug.called)
@@ -1629,7 +1604,7 @@ vrrp_instance VR_1 {
         port = {'fixed_ips': [{'ip_address': '192.168.1.4'}]}
         ri.router = {'distributed': False}
 
-        agent._handle_router_snat_rules(ri, port, [], "iface", "add_rules")
+        agent._handle_router_snat_rules(ri, port, "iface", "add_rules")
 
         nat = ri.iptables_manager.ipv4['nat']
         nat.empty_chain.assert_any_call('snat')
@@ -1645,9 +1620,8 @@ vrrp_instance VR_1 {
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         ri = l3_agent.RouterInfo(_uuid(), self.conf.root_helper, {})
         ex_gw_port = {'fixed_ips': [{'ip_address': '192.168.1.4'}]}
-        internal_cidrs = ['10.0.0.0/24']
         ri.router = {'distributed': False}
-        agent._handle_router_snat_rules(ri, ex_gw_port, internal_cidrs,
+        agent._handle_router_snat_rules(ri, ex_gw_port,
                                         "iface", "add_rules")
 
         nat_rules = map(str, ri.iptables_manager.ipv4['nat'].rules)
@@ -1655,15 +1629,14 @@ vrrp_instance VR_1 {
 
         jump_float_rule = "-A %s-snat -j %s-float-snat" % (wrap_name,
                                                            wrap_name)
-        internal_net_rule = ("-A %s-snat -s %s -j SNAT --to-source %s") % (
-            wrap_name, internal_cidrs[0],
-            ex_gw_port['fixed_ips'][0]['ip_address'])
+        snat_rule = ("-A %s-snat -o iface -j SNAT --to-source %s") % (
+            wrap_name, ex_gw_port['fixed_ips'][0]['ip_address'])
 
         self.assertIn(jump_float_rule, nat_rules)
 
-        self.assertIn(internal_net_rule, nat_rules)
+        self.assertIn(snat_rule, nat_rules)
         self.assertThat(nat_rules.index(jump_float_rule),
-                        matchers.LessThan(nat_rules.index(internal_net_rule)))
+                        matchers.LessThan(nat_rules.index(snat_rule)))
 
     def test_process_router_delete_stale_internal_devices(self):
         class FakeDev(object):
@@ -1867,7 +1840,7 @@ vrrp_instance VR_1 {
 
         self.conf.set_override('router_id', '1234')
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
-        self.assertEqual(['1234'], agent._router_ids())
+        self.assertEqual('1234', agent.conf.router_id)
         self.assertFalse(agent._clean_stale_namespaces)
 
     def test_process_router_if_compatible_with_no_ext_net_in_conf(self):

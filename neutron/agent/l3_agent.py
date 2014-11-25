@@ -78,7 +78,7 @@ PRIORITY_SYNC_ROUTERS_TASK = 1
 DELETE_ROUTER = 1
 
 
-class L3PluginApi(n_rpc.RpcProxy):
+class L3PluginApi(object):
     """Agent side of the l3 agent RPC API.
 
     API version history:
@@ -92,18 +92,16 @@ class L3PluginApi(n_rpc.RpcProxy):
 
     """
 
-    BASE_RPC_API_VERSION = '1.0'
-
     def __init__(self, topic, host):
-        super(L3PluginApi, self).__init__(
-            topic=topic, default_version=self.BASE_RPC_API_VERSION)
         self.host = host
+        target = messaging.Target(topic=topic, version='1.0')
+        self.client = n_rpc.get_client(target)
 
     def get_routers(self, context, router_ids=None):
         """Make a remote process call to retrieve the sync data for routers."""
-        return self.call(context,
-                         self.make_msg('sync_routers', host=self.host,
-                                       router_ids=router_ids))
+        cctxt = self.client.prepare()
+        return cctxt.call(context, 'sync_routers', host=self.host,
+                          router_ids=router_ids)
 
     def get_external_network_id(self, context):
         """Make a remote process call to retrieve the external network id.
@@ -112,40 +110,31 @@ class L3PluginApi(n_rpc.RpcProxy):
                                       exc_type if there are more than one
                                       external network
         """
-        return self.call(context,
-                         self.make_msg('get_external_network_id',
-                                       host=self.host))
+        cctxt = self.client.prepare()
+        return cctxt.call(context, 'get_external_network_id', host=self.host)
 
     def update_floatingip_statuses(self, context, router_id, fip_statuses):
         """Call the plugin update floating IPs's operational status."""
-        return self.call(context,
-                         self.make_msg('update_floatingip_statuses',
-                                       router_id=router_id,
-                                       fip_statuses=fip_statuses),
-                         version='1.1')
+        cctxt = self.client.prepare(version='1.1')
+        return cctxt.call(context, 'update_floatingip_statuses',
+                          router_id=router_id, fip_statuses=fip_statuses)
 
     def get_ports_by_subnet(self, context, subnet_id):
         """Retrieve ports by subnet id."""
-        return self.call(context,
-                         self.make_msg('get_ports_by_subnet', host=self.host,
-                                       subnet_id=subnet_id),
-                         topic=self.topic,
-                         version='1.2')
+        cctxt = self.client.prepare(version='1.2')
+        return cctxt.call(context, 'get_ports_by_subnet', host=self.host,
+                          subnet_id=subnet_id)
 
     def get_agent_gateway_port(self, context, fip_net):
         """Get or create an agent_gateway_port."""
-        return self.call(context,
-                         self.make_msg('get_agent_gateway_port',
-                                       network_id=fip_net, host=self.host),
-                         topic=self.topic,
-                         version='1.2')
+        cctxt = self.client.prepare(version='1.2')
+        return cctxt.call(context, 'get_agent_gateway_port',
+                          network_id=fip_net, host=self.host)
 
     def get_service_plugin_list(self, context):
         """Make a call to get the list of activated services."""
-        return self.call(context,
-                         self.make_msg('get_service_plugin_list'),
-                         topic=self.topic,
-                         version='1.3')
+        cctxt = self.client.prepare(version='1.3')
+        return cctxt.call(context, 'get_service_plugin_list')
 
 
 class LinkLocalAddressPair(netaddr.IPNetwork):
@@ -631,17 +620,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         ns_to_ignore = self._get_routers_namespaces(router_ids)
 
         ns_to_destroy = router_namespaces - ns_to_ignore
-        self._destroy_stale_router_namespaces(ns_to_destroy)
-
-    def _destroy_stale_router_namespaces(self, router_namespaces):
-        """Destroys the stale router namespaces
-
-        The argumenet router_namespaces is a list of stale router namespaces
-
-        As some stale router namespaces may not be able to be deleted, only
-        one attempt will be made to delete them.
-        """
-        for ns in router_namespaces:
+        for ns in ns_to_destroy:
             try:
                 self._destroy_namespace(ns)
             except RuntimeError:
@@ -698,7 +677,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         self.agent_gateway_port = None
 
     def _destroy_router_namespace(self, ns):
-        router_id = ns[len(NS_PREFIX):]
+        router_id = self.get_router_id(ns)
         ra.disable_ipv6_ra(router_id, ns, self.root_helper)
         if self.conf.enable_metadata_proxy:
             self._destroy_metadata_proxy(router_id, ns)
@@ -973,11 +952,8 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         # Process SNAT rules for external gateway
         if (not ri.router['distributed'] or
             ex_gw_port and ri.router['gw_port_host'] == self.host):
-            # Get IPv4 only internal CIDRs
-            internal_cidrs = [p['ip_cidr'] for p in ri.internal_ports
-                              if netaddr.IPNetwork(p['ip_cidr']).version == 4]
             ri.perform_snat_action(self._handle_router_snat_rules,
-                                   internal_cidrs, interface_name)
+                                   interface_name)
 
         # Process SNAT/DNAT rules for floating IPs
         fip_statuses = {}
@@ -1016,7 +992,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
             else:
                 ri.disable_keepalived()
 
-    def _handle_router_snat_rules(self, ri, ex_gw_port, internal_cidrs,
+    def _handle_router_snat_rules(self, ri, ex_gw_port,
                                   interface_name, action):
         # Remove all the rules
         # This is safe because if use_namespaces is set as False
@@ -1045,7 +1021,6 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                 ex_gw_ip = ip_addr['ip_address']
                 if netaddr.IPAddress(ex_gw_ip).version == 4:
                     rules = self.external_gateway_nat_rules(ex_gw_ip,
-                                                            internal_cidrs,
                                                             interface_name)
                     for rule in rules:
                         iptables_manager.ipv4['nat'].add_rule(*rule)
@@ -1257,6 +1232,9 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
     def get_ns_name(self, router_id):
         return (NS_PREFIX + router_id)
 
+    def get_router_id(self, ns_name):
+        return ns_name[len(NS_PREFIX):]
+
     def get_snat_ns_name(self, router_id):
         return (SNAT_NS_PREFIX + router_id)
 
@@ -1461,14 +1439,13 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                           '--to-port %s' % self.conf.metadata_port))
         return rules
 
-    def external_gateway_nat_rules(self, ex_gw_ip, internal_cidrs,
-                                   interface_name):
+    def external_gateway_nat_rules(self, ex_gw_ip, interface_name):
         rules = [('POSTROUTING', '! -i %(interface_name)s '
                   '! -o %(interface_name)s -m conntrack ! '
                   '--ctstate DNAT -j ACCEPT' %
-                  {'interface_name': interface_name})]
-        for cidr in internal_cidrs:
-            rules.extend(self.internal_network_nat_rules(ex_gw_ip, cidr))
+                  {'interface_name': interface_name}),
+                 ('snat', '-o %s -j SNAT --to-source %s' %
+                  (interface_name, ex_gw_ip))]
         return rules
 
     def _snat_redirect_add(self, ri, gateway, sn_port, sn_int):
@@ -1580,11 +1557,6 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                 self._clear_vips(ri, interface_name)
             self.driver.unplug(interface_name, namespace=ri.ns_name,
                                prefix=INTERNAL_DEV_PREFIX)
-
-    def internal_network_nat_rules(self, ex_gw_ip, internal_cidr):
-        rules = [('snat', '-s %s -j SNAT --to-source %s' %
-                 (internal_cidr, ex_gw_ip))]
-        return rules
 
     def _create_agent_gateway_port(self, ri, network_id):
         """Create Floating IP gateway port.
@@ -1856,18 +1828,11 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         while True:
             pool.spawn_n(self._process_router_update)
 
-    def _router_ids(self):
-        if not self.conf.use_namespaces:
-            return [self.conf.router_id]
-
     @periodic_task.periodic_task
     def periodic_sync_routers_task(self, context):
-        self._sync_routers_task(context)
-
-    def _sync_routers_task(self, context):
         if self.services_sync:
             super(L3NATAgent, self).process_services_sync(context)
-        LOG.debug("Starting _sync_routers_task - fullsync:%s",
+        LOG.debug("Starting periodic_sync_routers_task - fullsync:%s",
                   self.fullsync)
         if not self.fullsync:
             return
@@ -1880,10 +1845,12 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         prev_router_ids = set(self.router_info)
 
         try:
-            router_ids = self._router_ids()
             timestamp = timeutils.utcnow()
-            routers = self.plugin_rpc.get_routers(
-                context, router_ids)
+            if self.conf.use_namespaces:
+                routers = self.plugin_rpc.get_routers(context)
+            else:
+                routers = self.plugin_rpc.get_routers(context,
+                                                      [self.conf.router_id])
 
             LOG.debug('Processing :%r', routers)
             for r in routers:
@@ -1893,7 +1860,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                                       timestamp=timestamp)
                 self._queue.add(update)
             self.fullsync = False
-            LOG.debug("_sync_routers_task successfully completed")
+            LOG.debug("periodic_sync_routers_task successfully completed")
         except messaging.MessagingException:
             LOG.exception(_LE("Failed synchronizing routers due to RPC error"))
             self.fullsync = True

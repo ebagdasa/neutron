@@ -13,8 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo import messaging
+
 from neutron.common import log
-from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron import manager
 from neutron.openstack.common import log as logging
@@ -29,41 +30,33 @@ class DVRServerRpcApiMixin(object):
 
     @log.log
     def get_dvr_mac_address_by_host(self, context, host):
-        return self.call(context,
-                         self.make_msg('get_dvr_mac_address_by_host',
-                                       host=host),
-                         version=self.DVR_RPC_VERSION)
+        cctxt = self.client.prepare(version=self.DVR_RPC_VERSION)
+        return cctxt.call(context, 'get_dvr_mac_address_by_host', host=host)
 
     @log.log
     def get_dvr_mac_address_list(self, context):
-        return self.call(context,
-                         self.make_msg('get_dvr_mac_address_list'),
-                         version=self.DVR_RPC_VERSION)
+        cctxt = self.client.prepare(version=self.DVR_RPC_VERSION)
+        return cctxt.call(context, 'get_dvr_mac_address_list')
 
     @log.log
     def get_ports_on_host_by_subnet(self, context, host, subnet):
-        return self.call(context,
-                         self.make_msg(
-                             'get_ports_on_host_by_subnet',
-                             host=host,
-                             subnet=subnet),
-                         version=self.DVR_RPC_VERSION)
+        cctxt = self.client.prepare(version=self.DVR_RPC_VERSION)
+        return cctxt.call(context, 'get_ports_on_host_by_subnet',
+                          host=host, subnet=subnet)
 
     @log.log
     def get_subnet_for_dvr(self, context, subnet):
-        return self.call(context,
-                         self.make_msg('get_subnet_for_dvr',
-                                       subnet=subnet),
-                         version=self.DVR_RPC_VERSION)
+        cctxt = self.client.prepare(version=self.DVR_RPC_VERSION)
+        return cctxt.call(context, 'get_subnet_for_dvr', subnet=subnet)
 
 
-class DVRServerRpcCallback(n_rpc.RpcCallback):
+class DVRServerRpcCallback(object):
     """Plugin-side RPC (implementation) for agent-to-plugin interaction."""
 
     # History
     #   1.0 Initial version
 
-    RPC_API_VERSION = "1.0"
+    target = messaging.Target(version='1.0')
 
     @property
     def plugin(self):

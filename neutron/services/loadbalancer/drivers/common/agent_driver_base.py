@@ -15,6 +15,7 @@
 import uuid
 
 from oslo.config import cfg
+from oslo import messaging
 
 from neutron.common import constants as q_const
 from neutron.common import exceptions as n_exc
@@ -24,6 +25,7 @@ from neutron.db import agents_db
 from neutron.db.loadbalancer import loadbalancer_db
 from neutron.extensions import lbaas_agentscheduler
 from neutron.extensions import portbindings
+from neutron.openstack.common.gettextutils import _LW
 from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.plugins.common import constants
@@ -67,7 +69,8 @@ class LoadBalancerCallbacks(n_rpc.RpcCallback):
             if not agents:
                 return []
             elif len(agents) > 1:
-                LOG.warning(_('Multiple lbaas agents found on host %s'), host)
+                LOG.warning(_LW('Multiple lbaas agents found on host %s'),
+                            host)
             pools = self.plugin.list_pools_on_lbaas_agent(context,
                                                           agents[0].id)
             pool_ids = [pool['id'] for pool in pools['pools']]
@@ -158,9 +161,9 @@ class LoadBalancerCallbacks(n_rpc.RpcCallback):
         except n_exc.NotFound:
             # update_status may come from agent on an object which was
             # already deleted from db with other request
-            LOG.warning(_('Cannot update status: %(obj_type)s %(obj_id)s '
-                          'not found in the DB, it was probably deleted '
-                          'concurrently'),
+            LOG.warning(_LW('Cannot update status: %(obj_type)s %(obj_id)s '
+                            'not found in the DB, it was probably deleted '
+                            'concurrently'),
                         {'obj_type': obj_type, 'obj_id': obj_id})
 
     def pool_destroyed(self, context, pool_id=None):
@@ -181,8 +184,7 @@ class LoadBalancerCallbacks(n_rpc.RpcCallback):
                 port_id
             )
         except n_exc.PortNotFound:
-            msg = _('Unable to find port %s to plug.')
-            LOG.debug(msg, port_id)
+            LOG.debug('Unable to find port %s to plug.', port_id)
             return
 
         port['admin_state_up'] = True
@@ -205,9 +207,9 @@ class LoadBalancerCallbacks(n_rpc.RpcCallback):
                 port_id
             )
         except n_exc.PortNotFound:
-            msg = _('Unable to find port %s to unplug.  This can occur when '
-                    'the Vip has been deleted first.')
-            LOG.debug(msg, port_id)
+            LOG.debug('Unable to find port %s to unplug. This can occur when '
+                      'the Vip has been deleted first.',
+                      port_id)
             return
 
         port['admin_state_up'] = False
@@ -222,18 +224,17 @@ class LoadBalancerCallbacks(n_rpc.RpcCallback):
             )
 
         except n_exc.PortNotFound:
-            msg = _('Unable to find port %s to unplug.  This can occur when '
-                    'the Vip has been deleted first.')
-            LOG.debug(msg, port_id)
+            LOG.debug('Unable to find port %s to unplug.  This can occur when '
+                      'the Vip has been deleted first.',
+                      port_id)
 
     def update_pool_stats(self, context, pool_id=None, stats=None, host=None):
         self.plugin.update_pool_stats(context, pool_id, data=stats)
 
 
-class LoadBalancerAgentApi(n_rpc.RpcProxy):
+class LoadBalancerAgentApi(object):
     """Plugin side of plugin to agent RPC API."""
 
-    BASE_RPC_API_VERSION = '2.0'
     # history
     #   1.0 Initial version
     #   1.1 Support agent_updated call
@@ -243,71 +244,69 @@ class LoadBalancerAgentApi(n_rpc.RpcProxy):
     #       object individually;
 
     def __init__(self, topic):
-        super(LoadBalancerAgentApi, self).__init__(
-            topic, default_version=self.BASE_RPC_API_VERSION)
-
-    def _cast(self, context, method_name, method_args, host, version=None):
-        return self.cast(
-            context,
-            self.make_msg(method_name, **method_args),
-            topic='%s.%s' % (self.topic, host),
-            version=version
-        )
+        target = messaging.Target(topic=topic, version='2.0')
+        self.client = n_rpc.get_client(target)
 
     def create_vip(self, context, vip, host):
-        return self._cast(context, 'create_vip', {'vip': vip}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'create_vip', vip=vip)
 
     def update_vip(self, context, old_vip, vip, host):
-        return self._cast(context, 'update_vip',
-                          {'old_vip': old_vip, 'vip': vip}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'update_vip', old_vip=old_vip, vip=vip)
 
     def delete_vip(self, context, vip, host):
-        return self._cast(context, 'delete_vip', {'vip': vip}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'delete_vip', vip=vip)
 
     def create_pool(self, context, pool, host, driver_name):
-        return self._cast(context, 'create_pool',
-                          {'pool': pool, 'driver_name': driver_name}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'create_pool', pool=pool, driver_name=driver_name)
 
     def update_pool(self, context, old_pool, pool, host):
-        return self._cast(context, 'update_pool',
-                          {'old_pool': old_pool, 'pool': pool}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'update_pool', old_pool=old_pool, pool=pool)
 
     def delete_pool(self, context, pool, host):
-        return self._cast(context, 'delete_pool', {'pool': pool}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'delete_pool', pool=pool)
 
     def create_member(self, context, member, host):
-        return self._cast(context, 'create_member', {'member': member}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'create_member', member=member)
 
     def update_member(self, context, old_member, member, host):
-        return self._cast(context, 'update_member',
-                          {'old_member': old_member, 'member': member}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'update_member', old_member=old_member,
+                   member=member)
 
     def delete_member(self, context, member, host):
-        return self._cast(context, 'delete_member', {'member': member}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'delete_member', member=member)
 
     def create_pool_health_monitor(self, context, health_monitor, pool_id,
                                    host):
-        return self._cast(context, 'create_pool_health_monitor',
-                          {'health_monitor': health_monitor,
-                           'pool_id': pool_id}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'create_pool_health_monitor',
+                   health_monitor=health_monitor, pool_id=pool_id)
 
     def update_pool_health_monitor(self, context, old_health_monitor,
                                    health_monitor, pool_id, host):
-        return self._cast(context, 'update_pool_health_monitor',
-                          {'old_health_monitor': old_health_monitor,
-                           'health_monitor': health_monitor,
-                           'pool_id': pool_id}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'update_pool_health_monitor',
+                   old_health_monitor=old_health_monitor,
+                   health_monitor=health_monitor, pool_id=pool_id)
 
     def delete_pool_health_monitor(self, context, health_monitor, pool_id,
                                    host):
-        return self._cast(context, 'delete_pool_health_monitor',
-                          {'health_monitor': health_monitor,
-                           'pool_id': pool_id}, host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'delete_pool_health_monitor',
+                health_monitor=health_monitor, pool_id=pool_id)
 
     def agent_updated(self, context, admin_state_up, host):
-        return self._cast(context, 'agent_updated',
-                          {'payload': {'admin_state_up': admin_state_up}},
-                          host)
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, 'agent_updated',
+                   payload={'admin_state_up': admin_state_up})
 
 
 class AgentDriverBase(abstract_driver.LoadBalancerAbstractDriver):

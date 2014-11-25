@@ -24,7 +24,7 @@ from neutron.db import api as db_api
 from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.openstack.common import excutils
-from neutron.openstack.common.gettextutils import _LE
+from neutron.openstack.common.gettextutils import _LE, _LW
 from neutron.openstack.common import log
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2 import driver_api as api
@@ -141,8 +141,8 @@ class NexusVxlanTypeDriver(type_tunnel.TunnelTypeDriver):
         vxlan_vnis = set()
         for tun_min, tun_max in self.tunnel_ranges:
             if tun_max + 1 - tun_min > MAX_VXLAN_VNI:
-                LOG.error(_("Skipping unreasonable VXLAN VNI range "
-                            "%(tun_min)s:%(tun_max)s"),
+                LOG.error(_LW("Skipping unreasonable VXLAN VNI range "
+                              "%(tun_min)s:%(tun_max)s"),
                           {'tun_min': tun_min, 'tun_max': tun_max})
             else:
                 vxlan_vnis |= set(xrange(tun_min, tun_max + 1))
@@ -216,7 +216,7 @@ class NexusVxlanTypeDriver(type_tunnel.TunnelTypeDriver):
                               vxlan_vni)
 
         if not count:
-            LOG.warning(_("vxlan_vni %s not found"), vxlan_vni)
+            LOG.warning(_LW("vxlan_vni %s not found"), vxlan_vni)
 
     def add_endpoint(self, ip, udp_port):
         pass

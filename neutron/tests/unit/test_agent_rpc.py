@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import contextlib
 import mock
 from oslo import messaging
 
@@ -26,8 +27,14 @@ class AgentRPCPluginApi(base.BaseTestCase):
         agent = rpc.PluginApi('fake_topic')
         ctxt = context.RequestContext('fake_user', 'fake_project')
         expect_val = 'foo'
-        with mock.patch('neutron.common.rpc.RpcProxy.call') as rpc_call:
-            rpc_call.return_value = expect_val
+        with contextlib.nested(
+            mock.patch.object(agent.client, 'call'),
+            mock.patch.object(agent.client, 'prepare'),
+        ) as (
+            mock_call, mock_prepare
+        ):
+            mock_prepare.return_value = agent.client
+            mock_call.return_value = expect_val
             func_obj = getattr(agent, method)
             if method == 'tunnel_sync':
                 actual_val = func_obj(ctxt, 'fake_tunnel_ip')
@@ -46,8 +53,14 @@ class AgentRPCPluginApi(base.BaseTestCase):
         ctxt = context.RequestContext('fake_user', 'fake_project')
         expect_val_get_device_details = 'foo'
         expect_val = [expect_val_get_device_details]
-        with mock.patch('neutron.common.rpc.RpcProxy.call') as rpc_call:
-            rpc_call.side_effect = [messaging.UnsupportedVersion('1.2'),
+        with contextlib.nested(
+            mock.patch.object(agent.client, 'call'),
+            mock.patch.object(agent.client, 'prepare'),
+        ) as (
+            mock_call, mock_prepare
+        ):
+            mock_prepare.return_value = agent.client
+            mock_call.side_effect = [messaging.UnsupportedVersion('1.2'),
                                     expect_val_get_device_details]
             func_obj = getattr(agent, 'get_devices_details_list')
             actual_val = func_obj(ctxt, ['fake_device'], 'fake_agent_id')
@@ -65,32 +78,42 @@ class AgentPluginReportState(base.BaseTestCase):
         topic = 'test'
         reportStateAPI = rpc.PluginReportStateAPI(topic)
         expected_agent_state = {'agent': 'test'}
-        with mock.patch.object(reportStateAPI, 'call') as call:
+        with contextlib.nested(
+            mock.patch.object(reportStateAPI.client, 'call'),
+            mock.patch.object(reportStateAPI.client, 'cast'),
+            mock.patch.object(reportStateAPI.client, 'prepare'),
+        ) as (
+            mock_call, mock_cast, mock_prepare
+        ):
+            mock_prepare.return_value = reportStateAPI.client
             ctxt = context.RequestContext('fake_user', 'fake_project')
             reportStateAPI.report_state(ctxt, expected_agent_state,
                                         use_call=True)
-            self.assertEqual(call.call_args[0][0], ctxt)
-            self.assertEqual(call.call_args[0][1]['method'],
-                             'report_state')
-            self.assertEqual(call.call_args[0][1]['args']['agent_state'],
+            self.assertEqual(mock_call.call_args[0][0], ctxt)
+            self.assertEqual(mock_call.call_args[0][1], 'report_state')
+            self.assertEqual(mock_call.call_args[1]['agent_state'],
                              {'agent_state': expected_agent_state})
-            self.assertIsInstance(call.call_args[0][1]['args']['time'],
-                                  str)
+            self.assertIsInstance(mock_call.call_args[1]['time'], str)
 
     def test_plugin_report_state_cast(self):
         topic = 'test'
         reportStateAPI = rpc.PluginReportStateAPI(topic)
         expected_agent_state = {'agent': 'test'}
-        with mock.patch.object(reportStateAPI, 'cast') as cast:
+        with contextlib.nested(
+            mock.patch.object(reportStateAPI.client, 'call'),
+            mock.patch.object(reportStateAPI.client, 'cast'),
+            mock.patch.object(reportStateAPI.client, 'prepare'),
+        ) as (
+            mock_call, mock_cast, mock_prepare
+        ):
+            mock_prepare.return_value = reportStateAPI.client
             ctxt = context.RequestContext('fake_user', 'fake_project')
             reportStateAPI.report_state(ctxt, expected_agent_state)
-            self.assertEqual(cast.call_args[0][0], ctxt)
-            self.assertEqual(cast.call_args[0][1]['method'],
-                             'report_state')
-            self.assertEqual(cast.call_args[0][1]['args']['agent_state'],
+            self.assertEqual(mock_cast.call_args[0][0], ctxt)
+            self.assertEqual(mock_cast.call_args[0][1], 'report_state')
+            self.assertEqual(mock_cast.call_args[1]['agent_state'],
                              {'agent_state': expected_agent_state})
-            self.assertIsInstance(cast.call_args[0][1]['args']['time'],
-                                  str)
+            self.assertIsInstance(mock_cast.call_args[1]['time'], str)
 
 
 class AgentRPCMethods(base.BaseTestCase):

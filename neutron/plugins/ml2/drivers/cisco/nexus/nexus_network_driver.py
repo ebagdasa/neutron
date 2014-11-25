@@ -133,7 +133,7 @@ class CiscoNexusDriver(object):
 
         confstr = self.create_xml_snippet(snippet)
 
-        LOG.debug(_("NexusDriver: %s"), confstr)
+        LOG.debug("NexusDriver: %s", confstr)
 
         self._edit_config(nexus_host, target='running', config=confstr)
 
@@ -165,7 +165,7 @@ class CiscoNexusDriver(object):
         """Build the VLAN config string xml snippet to be used."""
         confstr = snippet % (intf_type, interface, vlanid, intf_type)
         confstr = self.create_xml_snippet(confstr)
-        LOG.debug(_("NexusDriver: %s"), confstr)
+        LOG.debug("NexusDriver: %s", confstr)
         return confstr
 
     def enable_vlan_on_trunk_int(self, nexus_host, vlanid, intf_type,
@@ -207,7 +207,7 @@ class CiscoNexusDriver(object):
                               intf_type, nexus_port, vni):
         """Create VLAN and trunk it on the specified ports."""
         self.create_vlan(nexus_host, vlan_id, vlan_name, vni)
-        LOG.debug(_("NexusDriver created VLAN: %s"), vlan_id)
+        LOG.debug("NexusDriver created VLAN: %s", vlan_id)
         if nexus_port:
             self.enable_vlan_on_trunk_int(nexus_host, vlan_id, intf_type,
                                           nexus_port)
@@ -222,7 +222,7 @@ class CiscoNexusDriver(object):
         # To get around the N9K failing on the "interface nve" command
         # send the two XML snippets down separately.
         confstr = self.create_xml_snippet(snipp.CMD_FEATURE_VXLAN_SNIPPET)
-        LOG.debug(_("NexusDriver: %s"), confstr)
+        LOG.debug("NexusDriver: %s", confstr)
         self._edit_config(nexus_host, config=confstr)
 
         confstr = self.create_xml_snippet((snipp.CMD_INT_NVE_SNIPPET %

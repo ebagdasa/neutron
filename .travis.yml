@@ -6,16 +6,17 @@ python:
 # whitelist branches
 branches:
   only:
-    - staging
+    - staging/kiloplus
 
 # command to install dependencies, e.g. pip install -r
 # Install tox for testing neutron builds.
-install: pip install tox
+install:
+    - pip install tox
+    - sudo apt-get -y install ebtables
 
 # command to run tests, e.g. python setup.py test
 # Running neutron unit tests for python
 script: 
-    - sudo apt-get -y install ebtables
     - tox -v -e pep8
     - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then ./run_tests.sh -V --parallel --concurrency=4; fi
     - if [[ $TRAVIS_PYTHON_VERSION == '3.4' ]]; then ./run_tests.sh -V --parallel --concurrency=4; fi
