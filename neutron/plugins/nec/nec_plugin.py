@@ -12,6 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo import messaging
+from oslo.utils import excutils
+from oslo.utils import importutils
+
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api import extensions as neutron_extensions
 from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
@@ -35,8 +39,6 @@ from neutron.db import quota_db  # noqa
 from neutron.db import securitygroups_rpc_base as sg_db_rpc
 from neutron.extensions import allowedaddresspairs as addr_pair
 from neutron.extensions import portbindings
-from neutron.openstack.common import excutils
-from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import uuidutils
 from neutron.plugins.common import constants as svc_constants
@@ -671,23 +673,19 @@ class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
         self.notify_security_groups_member_updated(context, port)
 
 
-class NECPluginV2AgentNotifierApi(n_rpc.RpcProxy,
-                                  sg_rpc.SecurityGroupAgentRpcApiMixin):
+class NECPluginV2AgentNotifierApi(sg_rpc.SecurityGroupAgentRpcApiMixin):
     '''RPC API for NEC plugin agent.'''
 
-    BASE_RPC_API_VERSION = '1.0'
-
     def __init__(self, topic):
-        super(NECPluginV2AgentNotifierApi, self).__init__(
-            topic=topic, default_version=self.BASE_RPC_API_VERSION)
+        self.topic = topic
         self.topic_port_update = topics.get_topic_name(
             topic, topics.PORT, topics.UPDATE)
+        target = messaging.Target(topic=topic, version='1.0')
+        self.client = n_rpc.get_client(target)
 
     def port_update(self, context, port):
-        self.fanout_cast(context,
-                         self.make_msg('port_update',
-                                       port=port),
-                         topic=self.topic_port_update)
+        cctxt = self.client.prepare(topic=self.topic_port_update, fanout=True)
+        cctxt.cast(context, 'port_update', port=port)
 
 
 class NECPluginV2RPCCallbacks(n_rpc.RpcCallback):

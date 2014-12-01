@@ -15,6 +15,9 @@
 """Implementation of OneConvergence Neutron Plugin."""
 
 from oslo.config import cfg
+from oslo import messaging
+from oslo.utils import excutils
+from oslo.utils import importutils
 
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
@@ -38,8 +41,6 @@ from neutron.db import portbindings_base
 from neutron.db import quota_db  # noqa
 from neutron.db import securitygroups_rpc_base as sg_db_rpc
 from neutron.extensions import portbindings
-from neutron.openstack.common import excutils
-from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.plugins.common import constants as svc_constants
 import neutron.plugins.oneconvergence.lib.config  # noqa
@@ -61,21 +62,18 @@ class SecurityGroupServerRpcMixin(sg_db_rpc.SecurityGroupServerRpcMixin):
         return port
 
 
-class NVSDPluginV2AgentNotifierApi(n_rpc.RpcProxy,
-                                   sg_rpc.SecurityGroupAgentRpcApiMixin):
-
-    BASE_RPC_API_VERSION = '1.0'
+class NVSDPluginV2AgentNotifierApi(sg_rpc.SecurityGroupAgentRpcApiMixin):
 
     def __init__(self, topic):
-        super(NVSDPluginV2AgentNotifierApi, self).__init__(
-            topic=topic, default_version=self.BASE_RPC_API_VERSION)
+        self.topic = topic
         self.topic_port_update = topics.get_topic_name(topic, topics.PORT,
                                                        topics.UPDATE)
+        target = messaging.Target(topic=topic, version='1.0')
+        self.client = n_rpc.get_client(target)
 
     def port_update(self, context, port):
-        self.fanout_cast(context,
-                         self.make_msg('port_update', port=port),
-                         topic=self.topic_port_update)
+        cctxt = self.client.prepare(topic=self.topic_port_update, fanout=True)
+        cctxt.cast(context, 'port_update', port=port)
 
 
 class OneConvergencePluginV2(db_base_plugin_v2.NeutronDbPluginV2,

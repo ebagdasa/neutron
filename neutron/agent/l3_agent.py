@@ -23,6 +23,9 @@ import netaddr
 import os
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import excutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import Queue
 
 from neutron.agent.common import config
@@ -41,16 +44,13 @@ from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils as common_utils
 from neutron import context as n_context
+from neutron.i18n import _LE, _LI, _LW
 from neutron import manager
-from neutron.openstack.common import excutils
-from neutron.openstack.common.gettextutils import _LE, _LI, _LW
-from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
 from neutron.openstack.common import periodic_task
 from neutron.openstack.common import processutils
 from neutron.openstack.common import service
-from neutron.openstack.common import timeutils
 from neutron import service as neutron_service
 from neutron.services.firewall.agents.l3reference import firewall_l3_agent
 
@@ -1600,14 +1600,16 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         rtr_2_fip, fip_2_rtr = ri.rtr_fip_subnet.get_pair()
         ip_wrapper = ip_lib.IPWrapper(self.root_helper,
                                       namespace=ri.ns_name)
-        int_dev = ip_wrapper.add_veth(rtr_2_fip_name,
-                                      fip_2_rtr_name, fip_ns_name)
-        self.internal_ns_interface_added(str(rtr_2_fip),
-                                         rtr_2_fip_name, ri.ns_name)
-        self.internal_ns_interface_added(str(fip_2_rtr),
-                                         fip_2_rtr_name, fip_ns_name)
-        int_dev[0].link.set_up()
-        int_dev[1].link.set_up()
+        if not ip_lib.device_exists(rtr_2_fip_name, self.root_helper,
+                                    namespace=ri.ns_name):
+            int_dev = ip_wrapper.add_veth(rtr_2_fip_name,
+                                          fip_2_rtr_name, fip_ns_name)
+            self.internal_ns_interface_added(str(rtr_2_fip),
+                                             rtr_2_fip_name, ri.ns_name)
+            self.internal_ns_interface_added(str(fip_2_rtr),
+                                             fip_2_rtr_name, fip_ns_name)
+            int_dev[0].link.set_up()
+            int_dev[1].link.set_up()
         # add default route for the link local interface
         device = ip_lib.IPDevice(rtr_2_fip_name, self.root_helper,
                                  namespace=ri.ns_name)
@@ -1843,15 +1845,22 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
         if self._clean_stale_namespaces:
             namespaces = self._list_namespaces()
         prev_router_ids = set(self.router_info)
+        timestamp = timeutils.utcnow()
 
         try:
-            timestamp = timeutils.utcnow()
             if self.conf.use_namespaces:
                 routers = self.plugin_rpc.get_routers(context)
             else:
                 routers = self.plugin_rpc.get_routers(context,
                                                       [self.conf.router_id])
 
+        except messaging.MessagingException:
+            LOG.exception(_LE("Failed synchronizing routers due to RPC error"))
+            self.fullsync = True
+        except Exception:
+            LOG.exception(_LE("Failed synchronizing routers"))
+            self.fullsync = True
+        else:
             LOG.debug('Processing :%r', routers)
             for r in routers:
                 update = RouterUpdate(r['id'],
@@ -1861,13 +1870,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                 self._queue.add(update)
             self.fullsync = False
             LOG.debug("periodic_sync_routers_task successfully completed")
-        except messaging.MessagingException:
-            LOG.exception(_LE("Failed synchronizing routers due to RPC error"))
-            self.fullsync = True
-        except Exception:
-            LOG.exception(_LE("Failed synchronizing routers"))
-            self.fullsync = True
-        else:
+
             # Resync is not necessary for the cleanup of stale namespaces
             curr_router_ids = set([r['id'] for r in routers])
 

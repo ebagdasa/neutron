@@ -15,6 +15,7 @@
 
 import contextlib
 
+import collections
 import mock
 from oslo.config import cfg
 from oslo import messaging
@@ -38,6 +39,11 @@ from neutron import manager
 from neutron.tests import base
 from neutron.tests.unit import test_extension_security_group as test_sg
 
+try:
+    OrderedDict = collections.OrderedDict
+except AttributeError:
+    import ordereddict
+    OrderedDict = ordereddict.OrderedDict
 
 FAKE_PREFIX = {const.IPv4: '10.0.0.0/24',
                const.IPv6: '2001:db8::/64'}
@@ -46,7 +52,6 @@ FAKE_IP = {const.IPv4: '10.0.0.1',
            'IPv6_GLOBAL': '2001:0db8::1',
            'IPv6_LLA': 'fe80::123',
            'IPv6_DHCP': '2001:db8::3'}
-
 
 TEST_PLUGIN_CLASS = ('neutron.tests.unit.test_security_groups_rpc.'
                      'SecurityGroupRpcTestPlugin')
@@ -237,21 +242,23 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
                                  expected)
                 self._delete('ports', port_id1)
 
-    def test_security_group_rules_for_devices_ipv4_ingress_addr_pair(self):
+    @contextlib.contextmanager
+    def _port_with_addr_pairs_and_security_group(self):
         plugin_obj = manager.NeutronManager.get_plugin()
         if ('allowed-address-pairs'
             not in plugin_obj.supported_extension_aliases):
-            self.skipTest("Test depeneds on allowed-address-pairs extension")
+            self.skipTest("Test depends on allowed-address-pairs extension")
         fake_prefix = FAKE_PREFIX['IPv4']
         with self.network() as n:
-            with contextlib.nested(self.subnet(n),
-                                   self.security_group()) as (subnet_v4,
-                                                              sg1):
+            with contextlib.nested(
+                self.subnet(n),
+                self.security_group()
+            ) as (subnet_v4, sg1):
                 sg1_id = sg1['security_group']['id']
                 rule1 = self._build_security_group_rule(
                     sg1_id,
                     'ingress', 'tcp', '22',
-                    '22')
+                    '22', remote_group_id=sg1_id)
                 rule2 = self._build_security_group_rule(
                     sg1_id,
                     'ingress', 'tcp', '23',
@@ -263,7 +270,7 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
                 self.deserialize(self.fmt, res)
                 self.assertEqual(res.status_int, 201)
                 address_pairs = [{'mac_address': '00:00:00:00:00:01',
-                                  'ip_address': '10.0.0.0/24'},
+                                  'ip_address': '10.0.1.0/24'},
                                  {'mac_address': '00:00:00:00:00:01',
                                   'ip_address': '11.0.0.1'}]
                 res1 = self._create_port(
@@ -271,34 +278,64 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
                     security_groups=[sg1_id],
                     arg_list=(addr_pair.ADDRESS_PAIRS,),
                     allowed_address_pairs=address_pairs)
-                ports_rest1 = self.deserialize(self.fmt, res1)
-                port_id1 = ports_rest1['port']['id']
-                self.rpc.devices = {port_id1: ports_rest1['port']}
-                devices = [port_id1, 'no_exist_device']
-                ctx = context.get_admin_context()
-                ports_rpc = self.rpc.security_group_rules_for_devices(
-                    ctx, devices=devices)
-                port_rpc = ports_rpc[port_id1]
-                expected = [{'direction': 'egress', 'ethertype': 'IPv4',
-                             'security_group_id': sg1_id},
-                            {'direction': 'egress', 'ethertype': 'IPv6',
-                             'security_group_id': sg1_id},
-                            {'direction': 'ingress',
-                             'protocol': 'tcp', 'ethertype': 'IPv4',
-                             'port_range_max': 22,
-                             'security_group_id': sg1_id,
-                             'port_range_min': 22},
-                            {'direction': 'ingress', 'protocol': 'tcp',
-                             'ethertype': 'IPv4',
-                             'port_range_max': 23, 'security_group_id': sg1_id,
-                             'port_range_min': 23,
-                             'source_ip_prefix': fake_prefix},
-                            ]
-                self.assertEqual(port_rpc['security_group_rules'],
-                                 expected)
-                self.assertEqual(port_rpc['allowed_address_pairs'],
-                                 address_pairs)
-                self._delete('ports', port_id1)
+                yield self.deserialize(self.fmt, res1)
+
+    def test_security_group_info_for_devices_ipv4_addr_pair(self):
+        with self._port_with_addr_pairs_and_security_group() as port:
+            port_id = port['port']['id']
+            sg_id = port['port']['security_groups'][0]
+            devices = [port_id, 'no_exist_device']
+            ctx = context.get_admin_context()
+            # verify that address pairs are included in remote SG IPs
+            sg_member_ips = self.rpc.security_group_info_for_devices(
+                ctx, devices=devices)['sg_member_ips']
+            expected_member_ips = [
+                '10.0.1.0/24', '11.0.0.1',
+                port['port']['fixed_ips'][0]['ip_address']]
+            self.assertEqual(sorted(expected_member_ips),
+                             sorted(sg_member_ips[sg_id]['IPv4']))
+            self._delete('ports', port_id)
+
+    def test_security_group_rules_for_devices_ipv4_ingress_addr_pair(self):
+        fake_prefix = FAKE_PREFIX[const.IPv4]
+        with self._port_with_addr_pairs_and_security_group() as port:
+            port_id = port['port']['id']
+            sg_id = port['port']['security_groups'][0]
+            devices = [port_id, 'no_exist_device']
+            ctx = context.get_admin_context()
+            ports_rpc = self.rpc.security_group_rules_for_devices(
+                ctx, devices=devices)
+
+            port_rpc = ports_rpc[port_id]
+            expected = [{'direction': 'egress', 'ethertype': 'IPv4',
+                         'security_group_id': sg_id},
+                        {'direction': 'egress', 'ethertype': 'IPv6',
+                         'security_group_id': sg_id},
+                        {'direction': 'ingress',
+                         'protocol': 'tcp', 'ethertype': 'IPv4',
+                         'port_range_max': 22,
+                         'remote_group_id': sg_id,
+                         'security_group_id': sg_id,
+                         'source_ip_prefix': '11.0.0.1/32',
+                         'port_range_min': 22},
+                        {'direction': 'ingress',
+                         'protocol': 'tcp', 'ethertype': 'IPv4',
+                         'port_range_max': 22,
+                         'remote_group_id': sg_id,
+                         'security_group_id': sg_id,
+                         'source_ip_prefix': '10.0.1.0/24',
+                         'port_range_min': 22},
+                        {'direction': 'ingress', 'protocol': 'tcp',
+                         'ethertype': 'IPv4',
+                         'port_range_max': 23, 'security_group_id': sg_id,
+                         'port_range_min': 23,
+                         'source_ip_prefix': fake_prefix},
+                        ]
+            self.assertEqual(expected,
+                             port_rpc['security_group_rules'])
+            self.assertEqual(port['port']['allowed_address_pairs'],
+                             port_rpc['allowed_address_pairs'])
+            self._delete('ports', port_id)
 
     def test_security_group_rules_for_devices_ipv4_egress(self):
         fake_prefix = FAKE_PREFIX[const.IPv4]
@@ -1173,9 +1210,10 @@ class SecurityGroupAgentEnhancedRpcTestCase(
         super(SecurityGroupAgentEnhancedRpcTestCase, self).setUp(
             defer_refresh_firewall=defer_refresh_firewall)
         fake_sg_info = {
-            'security_groups': {
-                'fake_sgid1': [
-                    {'remote_group_id': 'fake_sgid2'}], 'fake_sgid2': []},
+            'security_groups':
+                OrderedDict([
+                    ('fake_sgid2', []),
+                    ('fake_sgid1', [{'remote_group_id': 'fake_sgid2'}])]),
             'sg_member_ips': {'fake_sgid2': {'IPv4': [], 'IPv6': []}},
             'devices': self.firewall.ports}
         self.agent.plugin_rpc.security_group_info_for_devices.return_value = (
@@ -1184,7 +1222,7 @@ class SecurityGroupAgentEnhancedRpcTestCase(
     def test_prepare_and_remove_devices_filter_enhanced_rpc(self):
         self.agent.prepare_devices_filter(['fake_device'])
         self.agent.remove_devices_filter(['fake_device'])
-        # these two mock are too log, just use tmp_mock to replace them
+        # these two mocks are too long, just use tmp_mock to replace them
         tmp_mock1 = mock.call.update_security_group_rules(
             'fake_sgid1', [{'remote_group_id': 'fake_sgid2'}])
         tmp_mock2 = mock.call.update_security_group_members(
@@ -1584,6 +1622,20 @@ IPTABLES_ARG = {'bn': iptables_manager.binary_name,
                 'physdev_is_bridged': PHYSDEV_IS_BRIDGED}
 
 CHAINS_NAT = 'OUTPUT|POSTROUTING|PREROUTING|float-snat|snat'
+
+# These Dicts use the same keys as devices2 and devices3 in
+# TestSecurityGroupAgentWithIptables() to ensure that the ordering
+# is consistent regardless of hashseed value
+PORTS = {'tap_port1': 'port1', 'tap_port2': 'port2'}
+MACS = {'tap_port1': '12:34:56:78:9a:bc', 'tap_port2': '12:34:56:78:9a:bd'}
+IPS = {'tap_port1': '10.0.0.3/32', 'tap_port2': '10.0.0.4/32'}
+
+IPTABLES_ARG['port1'] = PORTS.values()[0]
+IPTABLES_ARG['port2'] = PORTS.values()[1]
+IPTABLES_ARG['mac1'] = MACS.values()[0]
+IPTABLES_ARG['mac2'] = MACS.values()[1]
+IPTABLES_ARG['ip1'] = IPS.values()[0]
+IPTABLES_ARG['ip2'] = IPS.values()[1]
 IPTABLES_ARG['chains'] = CHAINS_NAT
 
 IPTABLES_NAT = """# Generated by iptables_manager
@@ -1801,62 +1853,62 @@ IPSET_FILTER_2 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port1 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port1 -m set --match-set IPv4security_group1 src -j \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -m set --match-set IPv4security_group1 src -j \
 RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-s_port1 -m mac --mac-source 12:34:56:78:9a:bc -s 10.0.0.3/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-s_%(port1)s -m mac --mac-source %(mac1)s -s %(ip1)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port1 -j DROP
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-s_port1
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-s_%(port1)s -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-s_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port2 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port2 -m set --match-set IPv4security_group1 src -j \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -m set --match-set IPv4security_group1 src -j \
 RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-s_port2 -m mac --mac-source 12:34:56:78:9a:bd -s 10.0.0.4/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-s_%(port2)s -m mac --mac-source %(mac2)s -s %(ip2)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port2 -j DROP
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-s_port2
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-s_%(port2)s -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-s_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager
@@ -1884,64 +1936,64 @@ IPSET_FILTER_2_3 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port1 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port1 -m set --match-set IPv4security_group1 src -j \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -m set --match-set IPv4security_group1 src -j \
 RETURN
-[0:0] -A %(bn)s-i_port1 -p icmp -j RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-i_%(port1)s -p icmp -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-s_port1 -m mac --mac-source 12:34:56:78:9a:bc -s 10.0.0.3/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-s_%(port1)s -m mac --mac-source %(mac1)s -s %(ip1)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port1 -j DROP
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-s_port1
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-s_%(port1)s -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-s_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port2 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port2 -m set --match-set IPv4security_group1 src -j \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -m set --match-set IPv4security_group1 src -j \
 RETURN
-[0:0] -A %(bn)s-i_port2 -p icmp -j RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-i_%(port2)s -p icmp -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-s_port2 -m mac --mac-source 12:34:56:78:9a:bd -s 10.0.0.4/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-s_%(port2)s -m mac --mac-source %(mac2)s -s %(ip2)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port2 -j DROP
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-s_port2
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-s_%(port2)s -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-s_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager
@@ -1969,64 +2021,69 @@ IPTABLES_FILTER_2 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port1 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.4/32 -j RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s %(ip2)s -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-s_port1 -m mac --mac-source 12:34:56:78:9a:bc -s 10.0.0.3/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-s_%(port1)s -m mac --mac-source %(mac1)s -s %(ip1)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port1 -j DROP
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-s_port1
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-s_%(port1)s -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-s_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port2 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.3/32 -j RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s %(ip1)s -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-s_port2 -m mac --mac-source 12:34:56:78:9a:bd -s 10.0.0.4/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-s_%(port2)s -m mac --mac-source %(mac2)s -s %(ip2)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port2 -j DROP
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-s_port2
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-s_%(port2)s -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-s_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager
 """ % IPTABLES_ARG
+
+# These Dicts use the same keys as devices2 and devices3 in
+# TestSecurityGroupAgentWithIptables() to ensure that the ordering
+# is consistent regardless of hashseed value
+REVERSE_PORT_ORDER = {'tap_port1': False, 'tap_port2': True}
 
 IPTABLES_FILTER_2_2 = """# Generated by iptables_manager
 *filter
@@ -2050,59 +2107,68 @@ IPTABLES_FILTER_2_2 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port1 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
+""" % IPTABLES_ARG
+if (REVERSE_PORT_ORDER.values()[0] is True):
+    IPTABLES_FILTER_2_2 += ("[0:0] -A %(bn)s-i_%(port1)s -s %(ip2)s "
+                            "-j RETURN\n"
+                            % IPTABLES_ARG)
+IPTABLES_FILTER_2_2 += """[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-s_port1 -m mac --mac-source 12:34:56:78:9a:bc -s 10.0.0.3/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-s_%(port1)s -m mac --mac-source %(mac1)s -s %(ip1)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port1 -j DROP
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-s_port1
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-s_%(port1)s -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-s_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port2 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.3/32 -j RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
+""" % IPTABLES_ARG
+if (REVERSE_PORT_ORDER.values()[0] is False):
+    IPTABLES_FILTER_2_2 += ("[0:0] -A %(bn)s-i_%(port2)s -s %(ip1)s "
+                            "-j RETURN\n"
+                            % IPTABLES_ARG)
+IPTABLES_FILTER_2_2 += """[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-s_port2 -m mac --mac-source 12:34:56:78:9a:bd -s 10.0.0.4/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-s_%(port2)s -m mac --mac-source %(mac2)s -s %(ip2)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port2 -j DROP
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-s_port2
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-s_%(port2)s -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-s_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager
@@ -2130,62 +2196,62 @@ IPTABLES_FILTER_2_3 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port1 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port1 -s 10.0.0.4/32 -j RETURN
-[0:0] -A %(bn)s-i_port1 -p icmp -j RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -s %(ip2)s -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p icmp -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-s_port1 -m mac --mac-source 12:34:56:78:9a:bc -s 10.0.0.3/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-s_%(port1)s -m mac --mac-source %(mac1)s -s %(ip1)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port1 -j DROP
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-s_port1
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-s_%(port1)s -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-s_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.2/32 -p udp -m udp --sport 67 --dport 68 \
--j RETURN
-[0:0] -A %(bn)s-i_port2 -p tcp -m tcp --dport 22 -j RETURN
-[0:0] -A %(bn)s-i_port2 -s 10.0.0.3/32 -j RETURN
-[0:0] -A %(bn)s-i_port2 -p icmp -j RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s 10.0.0.2/32 -p udp -m udp --sport 67 \
+--dport 68 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -s %(ip1)s -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p icmp -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-s_port2 -m mac --mac-source 12:34:56:78:9a:bd -s 10.0.0.4/32 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-s_%(port2)s -m mac --mac-source %(mac2)s -s %(ip2)s \
 -j RETURN
-[0:0] -A %(bn)s-s_port2 -j DROP
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 68 --dport 67 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-s_port2
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 67 --dport 68 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-s_%(port2)s -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 68 --dport 67 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-s_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 67 --dport 68 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager
@@ -2284,54 +2350,54 @@ IPTABLES_FILTER_V6_2 = """# Generated by iptables_manager
 [0:0] -A OUTPUT -j %(bn)s-OUTPUT
 [0:0] -A FORWARD -j %(bn)s-FORWARD
 [0:0] -A %(bn)s-sg-fallback -j DROP
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port1 \
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-i_port1
-[0:0] -A %(bn)s-i_port1 -p icmpv6 --icmpv6-type 130 -j RETURN
-[0:0] -A %(bn)s-i_port1 -p icmpv6 --icmpv6-type 131 -j RETURN
-[0:0] -A %(bn)s-i_port1 -p icmpv6 --icmpv6-type 132 -j RETURN
-[0:0] -A %(bn)s-i_port1 -p icmpv6 --icmpv6-type 135 -j RETURN
-[0:0] -A %(bn)s-i_port1 -p icmpv6 --icmpv6-type 136 -j RETURN
-[0:0] -A %(bn)s-i_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port1 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port1)s
+[0:0] -A %(bn)s-i_%(port1)s -p icmpv6 --icmpv6-type 130 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p icmpv6 --icmpv6-type 131 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p icmpv6 --icmpv6-type 132 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p icmpv6 --icmpv6-type 135 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -p icmpv6 --icmpv6-type 136 -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port1 \
-%(physdev_is_bridged)s -j %(bn)s-o_port1
-[0:0] -A %(bn)s-o_port1 -p icmpv6 -j RETURN
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 546 --dport 547 -j RETURN
-[0:0] -A %(bn)s-o_port1 -p udp -m udp --sport 547 --dport 546 -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port1 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port1 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_port2 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port1)s
+[0:0] -A %(bn)s-o_%(port1)s -p icmpv6 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 546 --dport 547 -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -p udp -m udp --sport 547 --dport 546 -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port1)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port1)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-i_port2
-[0:0] -A %(bn)s-i_port2 -p icmpv6 --icmpv6-type 130 -j RETURN
-[0:0] -A %(bn)s-i_port2 -p icmpv6 --icmpv6-type 131 -j RETURN
-[0:0] -A %(bn)s-i_port2 -p icmpv6 --icmpv6-type 132 -j RETURN
-[0:0] -A %(bn)s-i_port2 -p icmpv6 --icmpv6-type 135 -j RETURN
-[0:0] -A %(bn)s-i_port2 -p icmpv6 --icmpv6-type 136 -j RETURN
-[0:0] -A %(bn)s-i_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-i_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-i_port2 -j %(bn)s-sg-fallback
-[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_port2 \
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-INGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-i_%(port2)s
+[0:0] -A %(bn)s-i_%(port2)s -p icmpv6 --icmpv6-type 130 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p icmpv6 --icmpv6-type 131 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p icmpv6 --icmpv6-type 132 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p icmpv6 --icmpv6-type 135 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -p icmpv6 --icmpv6-type 136 -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-i_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
-[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_port2 \
-%(physdev_is_bridged)s -j %(bn)s-o_port2
-[0:0] -A %(bn)s-o_port2 -p icmpv6 -j RETURN
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 546 --dport 547 -j RETURN
-[0:0] -A %(bn)s-o_port2 -p udp -m udp --sport 547 --dport 546 -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state INVALID -j DROP
-[0:0] -A %(bn)s-o_port2 -m state --state RELATED,ESTABLISHED -j RETURN
-[0:0] -A %(bn)s-o_port2 -j %(bn)s-sg-fallback
+[0:0] -A %(bn)s-sg-chain %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-INPUT %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
+%(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
+[0:0] -A %(bn)s-o_%(port2)s -p icmpv6 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 546 --dport 547 -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -p udp -m udp --sport 547 --dport 546 -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state INVALID -j DROP
+[0:0] -A %(bn)s-o_%(port2)s -m state --state RELATED,ESTABLISHED -j RETURN
+[0:0] -A %(bn)s-o_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-sg-chain -j ACCEPT
 COMMIT
 # Completed by iptables_manager

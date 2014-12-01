@@ -19,6 +19,7 @@ import eventlet
 eventlet.monkey_patch()
 
 from oslo.config import cfg
+from oslo.utils import importutils
 
 from neutron.agent.common import config as agent_config
 from neutron.agent import dhcp_agent
@@ -29,8 +30,7 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import ovs_lib
 from neutron.api.v2 import attributes
 from neutron.common import config
-from neutron.openstack.common.gettextutils import _LE
-from neutron.openstack.common import importutils
+from neutron.i18n import _LE
 from neutron.openstack.common import log as logging
 
 

@@ -1,4 +1,3 @@
-# Copyright 2014: Mirantis Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,18 +12,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo import i18n
 
-from rally.benchmark.scenarios.neutron import utils
+_translators = i18n.TranslatorFactory(domain='neutron')
 
+# The primary translation function using the well-known name "_"
+_ = _translators.primary
 
-class NeutronListNetworks(utils.NeutronScenario):
-
-    @base.scenario()
-    def list_networks(self):
-        """Test listing all networks.
-
-        This scenario is a very useful tool to measure
-        the "neutron net-list" command performance.
-
-        """
-        self._list_networks()
+# Translators for log levels.
+#
+# The abbreviated names are meant to reflect the usual use of a short
+# name like '_'. The "L" is for "log" and the other letter comes from
+# the level.
+_LI = _translators.log_info
+_LW = _translators.log_warning
+_LE = _translators.log_error
+_LC = _translators.log_critical

@@ -20,6 +20,7 @@ eventlet.monkey_patch()
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import importutils
 
 from neutron.agent.common import config
 from neutron.agent import rpc as agent_rpc
@@ -29,9 +30,8 @@ from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
 from neutron import context
+from neutron.i18n import _LE, _LI, _LW
 from neutron import manager
-from neutron.openstack.common.gettextutils import _LE, _LI, _LW
-from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
 from neutron.openstack.common import periodic_task
@@ -45,6 +45,11 @@ LOG = logging.getLogger(__name__)
 class MeteringPluginRpc(object):
 
     def __init__(self, host):
+        # NOTE(yamamoto): super.__init__() call here is not only for
+        # aesthetics.  Because of multiple inheritances in MeteringAgent,
+        # it's actually necessary to initialize parent classes of
+        # manager.Manager correctly.
+        super(MeteringPluginRpc, self).__init__()
         target = messaging.Target(topic=topics.METERING_PLUGIN, version='1.0')
         self.client = n_rpc.get_client(target)
 

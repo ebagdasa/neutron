@@ -23,7 +23,7 @@ from neutron.db import allowedaddresspairs_db as addr_pair
 from neutron.db import models_v2
 from neutron.db import securitygroups_db as sg_db
 from neutron.extensions import securitygroup as ext_sg
-from neutron.openstack.common.gettextutils import _LW
+from neutron.i18n import _LW
 from neutron.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -215,7 +215,7 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
             context, sg_info['sg_member_ips'].keys())
         for sg_id, member_ips in ips.items():
             for ip in member_ips:
-                ethertype = 'IPv%d' % netaddr.IPAddress(ip).version
+                ethertype = 'IPv%d' % netaddr.IPNetwork(ip).version
                 if (ethertype in sg_info['sg_member_ips'][sg_id]
                     and ip not in sg_info['sg_member_ips'][sg_id][ethertype]):
                     sg_info['sg_member_ips'][sg_id][ethertype].append(ip)

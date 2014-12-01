@@ -17,6 +17,7 @@ import abc
 
 import netaddr
 from oslo.config import cfg
+from oslo.utils import importutils
 import six
 
 from neutron.agent.common import config
@@ -26,8 +27,7 @@ from neutron.agent.linux import utils
 from neutron.common import constants as n_const
 from neutron.common import exceptions
 from neutron.extensions import flavor
-from neutron.openstack.common.gettextutils import _LE, _LI
-from neutron.openstack.common import importutils
+from neutron.i18n import _LE, _LI
 from neutron.openstack.common import log as logging
 
 

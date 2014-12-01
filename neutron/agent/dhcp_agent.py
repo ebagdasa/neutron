@@ -23,6 +23,7 @@ eventlet.monkey_patch()
 import netaddr
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import importutils
 
 from neutron.agent.common import config
 from neutron.agent.linux import dhcp
@@ -37,9 +38,8 @@ from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
 from neutron import context
+from neutron.i18n import _LE, _LI, _LW
 from neutron import manager
-from neutron.openstack.common.gettextutils import _LE, _LI, _LW
-from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
 from neutron.openstack.common import service
@@ -237,16 +237,20 @@ class DhcpAgent(manager.Manager):
 
         enable_metadata = self.dhcp_driver_cls.should_enable_metadata(
                 self.conf, network)
+        dhcp_network_enabled = False
 
         for subnet in network.subnets:
             if subnet.enable_dhcp:
                 if self.call_driver('enable', network):
-                    if (subnet.ip_version == 4 and self.conf.use_namespaces
-                        and enable_metadata):
-                        self.enable_isolated_metadata_proxy(network)
-                        enable_metadata = False  # Don't trigger twice
+                    dhcp_network_enabled = True
                     self.cache.put(network)
                 break
+
+        if enable_metadata and dhcp_network_enabled:
+            for subnet in network.subnets:
+                if subnet.ip_version == 4 and subnet.enable_dhcp:
+                    self.enable_isolated_metadata_proxy(network)
+                    break
 
     def disable_dhcp_helper(self, network_id):
         """Disable DHCP for a network known to the agent."""

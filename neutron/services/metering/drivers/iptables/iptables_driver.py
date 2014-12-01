@@ -13,6 +13,7 @@
 # under the License.
 
 from oslo.config import cfg
+from oslo.utils import importutils
 import six
 
 from neutron.agent.common import config
@@ -21,8 +22,7 @@ from neutron.agent.linux import iptables_manager
 from neutron.common import constants as constants
 from neutron.common import ipv6_utils
 from neutron.common import log
-from neutron.openstack.common.gettextutils import _LI
-from neutron.openstack.common import importutils
+from neutron.i18n import _LI
 from neutron.openstack.common import log as logging
 from neutron.services.metering.drivers import abstract_driver
 

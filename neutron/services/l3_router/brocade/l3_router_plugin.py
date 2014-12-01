@@ -18,10 +18,10 @@
 """Implentation of Brocade SVI service Plugin."""
 
 from oslo.config import cfg
+from oslo.utils import excutils
 
 from neutron.common import constants as l3_constants
-from neutron.openstack.common import excutils
-from neutron.openstack.common.gettextutils import _LE, _LI
+from neutron.i18n import _LE, _LI
 from neutron.openstack.common import log as logging
 from neutron.plugins.ml2 import db
 from neutron.plugins.ml2.drivers.brocade.db import models as brocade_db
@@ -74,7 +74,7 @@ class BrocadeSVIPlugin(router.L3RouterPlugin):
         LOG.info(_LI("rbridge id %s"), self._switch['rbridge_id'])
 
     def create_router(self, context, router):
-        """ creates a vrf on NOS device."""
+        """Creates a vrf on NOS device."""
         LOG.debug("BrocadeSVIPlugin.create_router called: ")
         with context.session.begin(subtransactions=True):
             new_router = super(BrocadeSVIPlugin, self).create_router(context,
@@ -99,7 +99,7 @@ class BrocadeSVIPlugin(router.L3RouterPlugin):
         return new_router
 
     def delete_router(self, context, router_id):
-        """ delete a vrf on NOS device."""
+        """Delete a vrf on NOS device."""
         router = super(BrocadeSVIPlugin, self).get_router(context, router_id)
         super(BrocadeSVIPlugin, self).delete_router(context, router_id)
 

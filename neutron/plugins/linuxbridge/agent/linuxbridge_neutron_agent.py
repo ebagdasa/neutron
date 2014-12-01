@@ -41,7 +41,7 @@ from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils as q_utils
 from neutron import context
-from neutron.openstack.common.gettextutils import _LE, _LI, _LW
+from neutron.i18n import _LE, _LI, _LW
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
 from neutron.plugins.common import constants as p_const
@@ -523,15 +523,17 @@ class LinuxBridgeManager:
                          'command': 'bridge fdb',
                          'mode': 'VXLAN UCAST'})
             return False
-        for segmentation_id in moves.xrange(1, constants.MAX_VXLAN_VNI + 1):
+
+        test_iface = None
+        for seg_id in moves.xrange(1, constants.MAX_VXLAN_VNI + 1):
             if not ip_lib.device_exists(
-                    self.get_vxlan_device_name(segmentation_id)):
+                    self.get_vxlan_device_name(seg_id)):
+                test_iface = self.ensure_vxlan(seg_id)
                 break
         else:
             LOG.error(_LE('No valid Segmentation ID to perform UCAST test.'))
             return False
 
-        test_iface = self.ensure_vxlan(segmentation_id)
         try:
             utils.execute(
                 cmd=['bridge', 'fdb', 'append', constants.FLOODING_ENTRY[0],

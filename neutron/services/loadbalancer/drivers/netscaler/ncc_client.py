@@ -18,7 +18,7 @@ from oslo.serialization import jsonutils
 import requests
 
 from neutron.common import exceptions as n_exc
-from neutron.openstack.common.gettextutils import _LE
+from neutron.i18n import _LE
 from neutron.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -130,13 +130,13 @@ class NSClient(object):
         try:
             response = requests.request(method, url=resource_uri,
                                         headers=headers, data=body)
+        except requests.exceptions.SSLError:
+            LOG.exception(_LE("SSL error occurred while connecting to %s"),
+                          self.service_uri)
+            raise NCCException(NCCException.CONNECTION_ERROR)
         except requests.exceptions.ConnectionError:
             LOG.exception(_LE("Connection error occurred while connecting "
                               "to %s"),
-                          self.service_uri)
-            raise NCCException(NCCException.CONNECTION_ERROR)
-        except requests.exceptions.SSLError:
-            LOG.exception(_LE("SSL error occurred while connecting to %s"),
                           self.service_uri)
             raise NCCException(NCCException.CONNECTION_ERROR)
         except requests.exceptions.Timeout:
