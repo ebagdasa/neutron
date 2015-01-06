@@ -22,6 +22,7 @@ from oslo.config import cfg
 from neutron.common import constants as n_const
 from neutron.db import api as db_api
 from neutron.extensions import portbindings
+from neutron.openstack.common.gettextutils import _LW
 from neutron.openstack.common import log as logging
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2 import db as ml2_db
@@ -181,15 +182,20 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
 
         Called during update postcommit port event.
         """
-        vlan_name = cfg.CONF.ml2_cisco.vlan_name_prefix + str(vlan_id)
         host_connections = self._get_switch_info(host_id)
-        auto_create = True
-        auto_trunk = True
         if is_provider_vlan:
-            vlan_name = (cfg.CONF.ml2_cisco.provider_vlan_name_prefix
-                        + str(vlan_id))
+            vlan_name = cfg.CONF.ml2_cisco.provider_vlan_name_prefix
             auto_create = cfg.CONF.ml2_cisco.provider_vlan_auto_create
             auto_trunk = cfg.CONF.ml2_cisco.provider_vlan_auto_trunk
+        else:
+            vlan_name = cfg.CONF.ml2_cisco.vlan_name_prefix
+            auto_create = True
+            auto_trunk = True
+        vlan_name_max_len = const.NEXUS_MAX_VLAN_NAME_LEN - len(str(vlan_id))
+        if len(vlan_name) > vlan_name_max_len:
+            vlan_name = vlan_name[:vlan_name_max_len]
+            LOG.warn(_LW("Nexus: truncating vlan name to %s"), vlan_name)
+        vlan_name = vlan_name + str(vlan_id)
 
         # (nexus_port,switch_ip) will be unique in each iteration.
         # But switch_ip will repeat if host has >1 connection to same switch.

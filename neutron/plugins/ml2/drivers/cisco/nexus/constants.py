@@ -24,3 +24,4 @@ PASSWORD = 'password'
 NETWORK_ADMIN = 'network_admin'
 
 NVE_INT_NUM = '1'
+NEXUS_MAX_VLAN_NAME_LEN = 32

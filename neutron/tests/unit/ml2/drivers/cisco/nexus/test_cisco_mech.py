@@ -29,6 +29,7 @@ from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2 import driver_context
 from neutron.plugins.ml2.drivers.cisco.nexus import config as cisco_config
+from neutron.plugins.ml2.drivers.cisco.nexus import constants as const
 from neutron.plugins.ml2.drivers.cisco.nexus import exceptions as c_exc
 from neutron.plugins.ml2.drivers.cisco.nexus import mech_cisco_nexus
 from neutron.plugins.ml2.drivers.cisco.nexus import nexus_db_v2
@@ -60,6 +61,7 @@ DEVICE_ID_2 = '22222222-2222-2222-2222-222222222222'
 DEVICE_OWNER = 'compute:None'
 PORT_ID = 'fakePortID'
 P_VLAN_NAME = 'abc-'
+P_VLAN_NAME_TOO_LONG = 'abcdefghijklmnopqrstuvwxyz0123456789-'
 VXLAN_SEGMENT = {api.NETWORK_TYPE: p_const.TYPE_NEXUS_VXLAN,
                  api.ID: PORT_ID}
 BOUND_SEGMENT1 = {api.NETWORK_TYPE: p_const.TYPE_VLAN,
@@ -540,19 +542,22 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
                     # Return to first segment for delete port calls.
                     self.mock_top_bound_segment.return_value = BOUND_SEGMENT1
 
-    def _test_nexus_providernet(self, auto_create, auto_trunk):
+    def _test_nexus_providernet(self, auto_create, auto_trunk,
+                                name=P_VLAN_NAME):
 
         cisco_config.cfg.CONF.set_override('provider_vlan_auto_create',
             auto_create, 'ml2_cisco')
         cisco_config.cfg.CONF.set_override('provider_vlan_auto_trunk',
             auto_trunk, 'ml2_cisco')
         cisco_config.cfg.CONF.set_override('provider_vlan_name_prefix',
-            P_VLAN_NAME, 'ml2_cisco')
+            name, 'ml2_cisco')
 
         with self._create_resources(name='net1', cidr=CIDR_1):
+            name_len = const.NEXUS_MAX_VLAN_NAME_LEN - len(str(VLAN_START))
             self.assertEqual(auto_create,
                              self._is_in_nexus_cfg(['vlan-id-create-delete',
-                                 'vlan-name', P_VLAN_NAME + str(VLAN_START)]))
+                                 'vlan-name', name[:name_len]
+                                 + str(VLAN_START)]))
             self.assertEqual(auto_trunk, self._is_in_nexus_cfg(['trunk']))
             self.mock_ncclient.reset_mock()
         self.assertEqual(auto_create,
@@ -579,6 +584,9 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
         self._test_nexus_providernet(auto_create=True, auto_trunk=False)
         self.mock_ncclient.reset_mock()
         self._test_nexus_providernet(auto_create=True, auto_trunk=True)
+        self.mock_ncclient.reset_mock()
+        self._test_nexus_providernet(auto_create=True, auto_trunk=True,
+                                     name=P_VLAN_NAME_TOO_LONG)
 
     def test_ncclient_version_detect(self):
         """Test ability to handle connection to old and new-style ncclient.
