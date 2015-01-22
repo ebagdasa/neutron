@@ -23,6 +23,7 @@ from neutron.common import constants as n_const
 from neutron.db import api as db_api
 from neutron.extensions import portbindings
 from neutron.openstack.common.gettextutils import _LW
+from neutron.openstack.common import lockutils
 from neutron.openstack.common import log as logging
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2 import db as ml2_db
@@ -342,6 +343,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             fields += "host_id" if not host_id else ""
             raise excep.NexusMissingRequiredFields(fields=fields)
 
+    @lockutils.synchronized('cisco-nexus-portlock')
     def update_port_precommit(self, context):
         """Update port pre-database transaction commit event."""
         vlan_segment, vxlan_segment = self._get_segments(
@@ -366,6 +368,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
                 self._port_action_vlan(context.current, vlan_segment,
                                        self._configure_nxos_db, vni)
 
+    @lockutils.synchronized('cisco-nexus-portlock')
     def update_port_postcommit(self, context):
         """Update port non-database commit event."""
         vlan_segment, vxlan_segment = self._get_segments(
@@ -390,6 +393,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
                 self._port_action_vlan(context.current, vlan_segment,
                                        self._configure_switch_entry, vni)
 
+    @lockutils.synchronized('cisco-nexus-portlock')
     def delete_port_precommit(self, context):
         """Delete port pre-database commit event."""
         if self._is_deviceowner_compute(context.current):
@@ -401,6 +405,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             self._port_action_vlan(context.current, vlan_segment,
                                    self._delete_nxos_db, vni)
 
+    @lockutils.synchronized('cisco-nexus-portlock')
     def delete_port_postcommit(self, context):
         """Delete port non-database commit event."""
         if self._is_deviceowner_compute(context.current):
