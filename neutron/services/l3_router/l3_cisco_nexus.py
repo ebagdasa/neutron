@@ -99,7 +99,7 @@ class CiscoNexusL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                                               router_id=router_id)
         except cexc.NexusPortBindingNotFound:
             nxos_db.add_nexusport_binding('router', str(vlan_id), 0,
-                                          switch_ip, router_id)
+                                          switch_ip, router_id, False)
 
     def _add_nexus_svi_interface(self, switch_ip, router_id, vlan_id, subnet):
         """Create SVI nexus switch entries."""
@@ -122,7 +122,7 @@ class CiscoNexusL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     def _remove_nexus_svi_db(self, switch_ip, router_id, vlan_id):
         """Delete SVI database nexus switch entries."""
         nxos_db.remove_nexusport_binding('router', str(vlan_id), 0,
-                                         switch_ip, router_id)
+                                         switch_ip, router_id, False)
 
     def _remove_nexus_svi_interface(self, switch_ip, vlan_id):
         """Delete SVI nexus switch entries."""

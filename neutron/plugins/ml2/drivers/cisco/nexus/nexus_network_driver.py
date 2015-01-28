@@ -183,6 +183,43 @@ class CiscoNexusDriver(object):
             return True
         return False
 
+    def get_version(self, nexus_host):
+        """Given the nexus host, get the version data.
+
+        :param nexus_host: IP address of Nexus switch
+
+        :returns version number
+        """
+
+        confstr = snipp.EXEC_GET_VERSION_SNIPPET
+        response = self._get_config(nexus_host, confstr)
+        LOG.debug("GET call returned version")
+        version = None
+        if response:
+            version = re.findall(
+                "\<sys_ver_str\>([\x20-\x7e]+)\<\/sys_ver_str\>", response)
+        return version
+
+    def get_nexus_type(self, nexus_host):
+        """Given the nexus host, get the type of Nexus switch.
+
+        :param nexus_host: IP address of Nexus switch
+
+        :returns Nexus type
+        """
+
+        confstr = snipp.EXEC_GET_INVENTORY_SNIPPET
+        response = self._get_config(nexus_host, confstr)
+        LOG.debug("GET call returned Nexus type")
+        if response:
+            nexus_type = re.findall(
+                "\<[mod:]*desc\>\"*Nexus\s*(\d)\d+\s*[0-9A-Z]+\s*"
+                "Chassis\s*\"*\<\/[mod:]*desc\>",
+                response)
+            return int(nexus_type[0])
+        else:
+            return -1
+
     def create_vlan(self, nexus_host, vlanid, vlanname, vni):
         """Create a VLAN on a Nexus Switch.
 

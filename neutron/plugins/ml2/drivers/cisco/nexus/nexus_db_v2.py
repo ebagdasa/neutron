@@ -40,21 +40,30 @@ def get_nexusvlan_binding(vlan_id, switch_ip):
     return _lookup_all_nexus_bindings(vlan_id=vlan_id, switch_ip=switch_ip)
 
 
-def add_nexusport_binding(port_id, vlan_id, vni, switch_ip, instance_id):
+def get_nexusport_switch_bindings(switch_ip):
+    """Lists all Nexus port switch bindings."""
+    LOG.debug(_("get_nexusport_switch_bindings() called"))
+    return _lookup_all_nexus_bindings(switch_ip=switch_ip)
+
+
+def add_nexusport_binding(port_id, vlan_id, vni, switch_ip, instance_id,
+                          is_provider_vlan):
     """Adds a nexusport binding."""
     LOG.debug(_("add_nexusport_binding() called"))
     session = db.get_session()
     binding = nexus_models_v2.NexusPortBinding(port_id=port_id,
-                                               vlan_id=vlan_id,
-                                               vni=vni,
-                                               switch_ip=switch_ip,
-                                               instance_id=instance_id)
+                  vlan_id=vlan_id,
+                  vni=vni,
+                  switch_ip=switch_ip,
+                  instance_id=instance_id,
+                  is_provider_vlan=is_provider_vlan)
     session.add(binding)
     session.flush()
     return binding
 
 
-def remove_nexusport_binding(port_id, vlan_id, vni, switch_ip, instance_id):
+def remove_nexusport_binding(port_id, vlan_id, vni, switch_ip, instance_id,
+                             is_provider_vlan):
     """Removes a nexusport binding."""
     LOG.debug(_("remove_nexusport_binding() called"))
     session = db.get_session()
@@ -63,7 +72,8 @@ def remove_nexusport_binding(port_id, vlan_id, vni, switch_ip, instance_id):
                                          vni=vni,
                                          switch_ip=switch_ip,
                                          port_id=port_id,
-                                         instance_id=instance_id)
+                                         instance_id=instance_id,
+                                         is_provider_vlan=is_provider_vlan)
     for bind in binding:
         session.delete(bind)
     session.flush()

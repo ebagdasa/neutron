@@ -15,6 +15,7 @@
 
 import collections
 import mock
+import re
 import testtools
 
 from neutron.common import constants as n_const
@@ -247,3 +248,274 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         """Tests creation and deletion of ports with device_owner of dhcp."""
         self._create_delete_port(
             TestCiscoNexusDevice.test_configs['test_config_dhcp'])
+
+
+RP_NEXUS_IP_ADDRESS_1 = '1.1.1.1'
+RP_NEXUS_IP_ADDRESS_2 = '2.2.2.2'
+RP_NEXUS_IP_ADDRESS_3 = '3.3.3.3'
+RP_HOST_NAME_1 = 'UniquePort'
+RP_HOST_NAME_2 = 'DuplicateVlan'
+RP_HOST_NAME_3 = 'DuplicatePort'
+RP_INSTANCE_1 = 'testvm1'
+RP_INSTANCE_2 = 'testvm2'
+RP_NEXUS_PORT_1 = 'ethernet:1/10'
+RP_NEXUS_PORT_2 = 'ethernet:1/20'
+RP_VLAN_ID_1 = 267
+RP_VLAN_ID_2 = 265
+
+
+class TestCiscoNexusReplay(testlib_api.SqlTestCase):
+    """Unit tests for Replay of Cisco ML2 Nexus data."""
+
+    TestConfigObj = collections.namedtuple(
+        'TestConfigObj',
+        'nexus_ip_addr host_name nexus_port instance_id vlan_id device_owner')
+
+    test_configs = {
+        'test_replay_unique1': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_1,
+            RP_HOST_NAME_1,
+            RP_NEXUS_PORT_1,
+            RP_INSTANCE_1,
+            RP_VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
+        'test_replay_unique2': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_1,
+            RP_HOST_NAME_1,
+            RP_NEXUS_PORT_1,
+            RP_INSTANCE_2,
+            RP_VLAN_ID_2,
+            DEVICE_OWNER_COMPUTE),
+        'test_replay_duplvlan1': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_2,
+            RP_HOST_NAME_2,
+            RP_NEXUS_PORT_1,
+            RP_INSTANCE_1,
+            RP_VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
+        'test_replay_duplvlan2': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_2,
+            RP_HOST_NAME_2,
+            RP_NEXUS_PORT_2,
+            RP_INSTANCE_2,
+            RP_VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
+        'test_replay_duplport1': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_3,
+            RP_HOST_NAME_3,
+            RP_NEXUS_PORT_1,
+            RP_INSTANCE_1,
+            RP_VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
+        'test_replay_duplport2': TestConfigObj(
+            RP_NEXUS_IP_ADDRESS_3,
+            RP_HOST_NAME_3,
+            RP_NEXUS_PORT_1,
+            RP_INSTANCE_2,
+            RP_VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
+    }
+
+    def setUp(self):
+        """Sets up mock ncclient, and switch and credentials dictionaries."""
+        super(TestCiscoNexusReplay, self).setUp()
+
+        # Use a mock netconf client
+        self.mock_ncclient = mock.Mock()
+        mock.patch.object(nexus_network_driver.CiscoNexusDriver,
+                          '_import_ncclient',
+                          return_value=self.mock_ncclient).start()
+        data_xml = {'connect.return_value.get.return_value.data_xml': ''}
+        self.mock_ncclient.configure_mock(**data_xml)
+
+        def new_nexus_init(mech_instance):
+            mech_instance.driver = importutils.import_object(NEXUS_DRIVER)
+
+            mech_instance._switch_state = {}
+            mech_instance._nexus_switches = {}
+            for name, config in TestCiscoNexusReplay.test_configs.items():
+                ip_addr = config.nexus_ip_addr
+                host_name = config.host_name
+                nexus_port = config.nexus_port
+                if (ip_addr, host_name) in mech_instance._nexus_switches:
+                    saved_port = (
+                        mech_instance._nexus_switches[(ip_addr, host_name)])
+                    if saved_port != nexus_port:
+                        mech_instance._nexus_switches[(ip_addr, host_name)] = (
+                            saved_port + ',' + nexus_port)
+                else:
+                    mech_instance._nexus_switches[(ip_addr,
+                                                   host_name)] = nexus_port
+                mech_instance._nexus_switches[(ip_addr,
+                                               'ssh_port')] = NEXUS_SSH_PORT
+                mech_instance._nexus_switches[(ip_addr,
+                                               constants.USERNAME)] = 'admin'
+                mech_instance._nexus_switches[(ip_addr,
+                                              constants.PASSWORD)] = 'password'
+            mech_instance.driver.nexus_switches = (
+                mech_instance._nexus_switches)
+
+        mock.patch.object(mech_cisco_nexus.CiscoNexusMechanismDriver,
+                          '__init__', new=new_nexus_init).start()
+        self._cisco_mech_driver = (mech_cisco_nexus.
+                                   CiscoNexusMechanismDriver())
+        self._cfg_monitor = (mech_cisco_nexus.
+                             CiscoNexusCfgMonitor(
+                                 self._cisco_mech_driver.driver,
+                                 self._cisco_mech_driver))
+
+    def _create_port(self, port_config):
+        """Tests creation of a virtual port."""
+        nexus_ip_addr = port_config.nexus_ip_addr
+        host_name = port_config.host_name
+        nexus_port = port_config.nexus_port
+        instance_id = port_config.instance_id
+        vlan_id = port_config.vlan_id
+        device_owner = port_config.device_owner
+
+        network_context = FakeNetworkContext(vlan_id)
+        port_context = FakePortContext(instance_id, host_name, device_owner,
+                                       network_context)
+
+        self._cisco_mech_driver.update_port_precommit(port_context)
+        self._cisco_mech_driver.update_port_postcommit(port_context)
+        for port_id in nexus_port.split(','):
+            bindings = nexus_db_v2.get_nexusport_binding(port_id,
+                                                         vlan_id,
+                                                         nexus_ip_addr,
+                                                         instance_id)
+            self.assertEqual(len(bindings), 1)
+
+    def _delete_port(self, port_config):
+        """Tests deletion of a virtual port."""
+        nexus_ip_addr = port_config.nexus_ip_addr
+        host_name = port_config.host_name
+        nexus_port = port_config.nexus_port
+        instance_id = port_config.instance_id
+        vlan_id = port_config.vlan_id
+        device_owner = port_config.device_owner
+
+        network_context = FakeNetworkContext(vlan_id)
+        port_context = FakePortContext(instance_id, host_name, device_owner,
+                                       network_context)
+
+        self._cisco_mech_driver.delete_port_precommit(port_context)
+        self._cisco_mech_driver.delete_port_postcommit(port_context)
+        for port_id in nexus_port.split(','):
+            with testtools.ExpectedException(
+                    exceptions.NexusPortBindingNotFound):
+                nexus_db_v2.get_nexusport_binding(port_id,
+                                                  vlan_id,
+                                                  nexus_ip_addr,
+                                                  instance_id)
+
+    def _verify_replay_results(self, driver_result):
+        """Verifies correct entries sent to Nexus."""
+
+        self.assertEqual(self.mock_ncclient.connect.return_value.
+            edit_config.call_count,
+            len(driver_result),
+            "Unexpected driver count")
+
+        for idx in xrange(0, len(driver_result)):
+            self.assertNotEqual(self.mock_ncclient.connect.
+                return_value.edit_config.mock_calls[idx][2]['config'],
+                None, "mock_data is None")
+            self.assertNotEqual(
+                re.search(driver_result[idx],
+                    self.mock_ncclient.connect.return_value.
+                    edit_config.mock_calls[idx][2]['config']),
+                None, "Expected result data not found")
+
+    def _process_replay(self, test1, test2, driver_results):
+        """Tests create, replay, delete of two ports."""
+
+        # Set all connection state to True except for
+        # test case HOST_1, RP_NEXUS_IP_ADDRESS_1
+        cfg_type = ['test_replay_unique1',
+                    'test_replay_duplvlan1',
+                    'test_replay_duplport1']
+        for which_cfg in cfg_type:
+            if which_cfg in [test1, test2]:
+                state = False
+            else:
+                state = True
+            port_cfg = TestCiscoNexusReplay.test_configs[which_cfg]
+            self._cisco_mech_driver.set_switch_ip_and_active_state(
+                port_cfg.nexus_ip_addr, state)
+
+        self._create_port(
+            TestCiscoNexusReplay.test_configs[test1])
+        self._create_port(
+            TestCiscoNexusReplay.test_configs[test2])
+
+        # Clean all the ncclient mock_calls so we can evaluate
+        # content as a result of replay()
+        self.mock_ncclient.reset_mock()
+
+        # Since only this test case connection state is False,
+        # it should be the only one replayed
+        self._cfg_monitor.check_connections()
+        self._verify_replay_results(driver_results)
+
+        self._delete_port(
+            TestCiscoNexusReplay.test_configs[test1])
+
+        self._delete_port(
+            TestCiscoNexusReplay.test_configs[test2])
+
+    def test_replay_unique_ports(self):
+        """Provides replay data and result data for unique ports. """
+        unique_driver_result = [
+            '\<vlan\-name\>q\-265\<\/vlan\-name>',
+            '\<vstate\>active\<\/vstate>',
+            '\<no\>\s+\<shutdown\/\>\s+\<\/no\>',
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>265',
+
+            '\<vlan\-name\>q\-267\<\/vlan\-name>',
+            '\<vstate\>active\<\/vstate>',
+            '\<no\>\s+\<shutdown\/\>\s+\<\/no\>',
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>267',
+        ]
+
+        self._process_replay('test_replay_unique1',
+                             'test_replay_unique2',
+                             unique_driver_result)
+
+    def test_replay_duplicate_vlan(self):
+        """Provides replay data and result data for duplicate vlans. """
+        duplicate_vlan_result = [
+            '\<vlan\-name\>q\-267\<\/vlan\-name>',
+            '\<vstate\>active\<\/vstate>',
+            '\<no\>\s+\<shutdown\/\>\s+\<\/no\>',
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>267',
+
+            '\<interface\>1\/20\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>267',
+        ]
+
+        self._process_replay('test_replay_duplvlan1',
+                             'test_replay_duplvlan2',
+                             duplicate_vlan_result)
+
+    def test_replay_duplicate_ports(self):
+        """Provides replay data and result data for duplicate ports. """
+        duplicate_port_result = [
+            '\<vlan\-name\>q\-267\<\/vlan\-name>',
+            '\<vstate\>active\<\/vstate>',
+            '\<no\>\s+\<shutdown\/\>\s+\<\/no\>',
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>267',
+        ]
+
+        self._process_replay('test_replay_duplport1',
+                             'test_replay_duplport2',
+                             duplicate_port_result)

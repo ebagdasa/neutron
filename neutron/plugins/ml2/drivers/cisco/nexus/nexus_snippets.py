@@ -33,6 +33,14 @@ EXEC_GET_INTF_SNIPPET = """
     <cmd>show running-config interface %s %s</cmd>
 """
 
+EXEC_GET_VERSION_SNIPPET = """
+    <cmd>show version</cmd>
+"""
+
+EXEC_GET_INVENTORY_SNIPPET = """
+    <cmd>show inventory</cmd>
+"""
+
 EXEC_SAVE_CONF_SNIPPET = """
             <cmd>copy running-config startup-config</cmd>
 """

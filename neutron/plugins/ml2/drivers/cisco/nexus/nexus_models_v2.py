@@ -30,12 +30,15 @@ class NexusPortBinding(model_base.BASEV2):
     vni = sa.Column(sa.Integer)
     switch_ip = sa.Column(sa.String(255))
     instance_id = sa.Column(sa.String(255))
+    is_provider_vlan = sa.Column(sa.Boolean(), nullable=False, default=False,
+                           server_default=sa.sql.false())
 
     def __repr__(self):
         """Just the binding, without the id key."""
-        return ("<NexusPortBinding(%s,%s,%s,%s, %s)>" %
+        return ("<NexusPortBinding(%s,%s,%s,%s, %s, %s)>" %
                 (self.port_id, self.vlan_id, self.vni, self.switch_ip,
-                 self.instance_id))
+                 self.instance_id,
+                 'True' if self.is_provider_vlan else 'False'))
 
     def __eq__(self, other):
         """Compare only the binding, without the id key."""
@@ -44,7 +47,8 @@ class NexusPortBinding(model_base.BASEV2):
             self.vlan_id == other.vlan_id and
             self.vni == other.vni and
             self.switch_ip == other.switch_ip and
-            self.instance_id == other.instance_id
+            self.instance_id == other.instance_id and
+            self.is_provider_vlan == other.is_provider_vlan
         )
 
 

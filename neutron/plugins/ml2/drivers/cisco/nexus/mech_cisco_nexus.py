@@ -17,6 +17,8 @@
 ML2 Mechanism Driver for Cisco Nexus platforms.
 """
 
+import threading
+
 from oslo.config import cfg
 
 from neutron.common import constants as n_const
@@ -37,6 +39,85 @@ from neutron.plugins.ml2.drivers.cisco.nexus import nexus_network_driver
 LOG = logging.getLogger(__name__)
 
 
+class CiscoNexusCfgMonitor(object):
+    """Replay config on communication failure between Openstack to Nexus."""
+
+    def __init__(self, driver, mdriver):
+        self._driver = driver
+        self._mdriver = mdriver
+        switch_connections = self._mdriver.get_switch_ips()
+        for switch_ip in switch_connections:
+            self._mdriver.set_switch_ip_and_active_state(
+                switch_ip, False)
+
+    def _configure_nexus_type(self, switch_ip, nexus_type):
+        if nexus_type not in (const.NEXUS_3K, const.NEXUS_5K,
+            const.NEXUS_7K, const.NEXUS_9K):
+            LOG.error(_("Received invalid Nexus type %(nexus_type)d for switch"
+                "for switch ip %(switch_ip)s"),
+                {'nexus_type': nexus_type, 'switch_ip': switch_ip})
+            return
+        if (self._mdriver.get_switch_nexus_type(switch_ip) ==
+           const.NEXUS_TYPE_INVALID):
+            self._mdriver.set_switch_nexus_type(switch_ip, nexus_type)
+
+    def replay_config(self, switch_ip):
+        """Sends pending config data in OpenStack to Nexus."""
+        LOG.debug(_("Replaying config for switch ip %(switch_ip)s"),
+                  {'switch_ip': switch_ip})
+
+        nve_bindings = nxos_db.get_nve_switch_bindings(switch_ip)
+
+        for x in nve_bindings:
+            try:
+                self._driver.create_nve_member(switch_ip,
+                    const.NVE_INT_NUM, x.vni, x.mcast_group)
+            except Exception as e:
+                LOG.debug(_("Failed to configure nve_member for "
+                    "switch %(switch_ip)s, vni %(vni)s"
+                    "Reason:%(reason)s "),
+                    {'switch_ip': switch_ip, 'vni': x.vni,
+                     'reason': e})
+
+        try:
+            port_bindings = nxos_db.get_nexusport_switch_bindings(switch_ip)
+        except excep.NexusPortBindingNotFound:
+            LOG.debug(_("No port entries found for switch ip "
+                      "%(switch_ip)s during replay."),
+                      {'switch_ip': switch_ip})
+            return
+
+        self._mdriver.configure_switch_entries(switch_ip,
+            port_bindings)
+
+    def check_connections(self):
+        """Check connection between Openstack to Nexus device."""
+        switch_connections = self._mdriver.get_switch_state()
+
+        for switch_ip in switch_connections:
+            state = self._mdriver.get_switch_ip_and_active_state(switch_ip)
+            LOG.debug(_("check_connections() switch "
+                      "%(switch_ip)s state %(state)d"),
+                      {'switch_ip': switch_ip, 'state': state})
+            try:
+                nexus_type = self._driver.get_nexus_type(switch_ip)
+            except Exception:
+                if state is True:
+                    LOG.error(_("Lost connection to switch ip %(switch_ip)s"),
+                        {'switch_ip': switch_ip})
+                    self._mdriver.set_switch_ip_and_active_state(
+                        switch_ip, False)
+            else:
+                if state is False:
+                    self._configure_nexus_type(switch_ip, nexus_type)
+                    LOG.debug(_("Re-established connection to switch "
+                        "ip %(switch_ip)s"),
+                        {'switch_ip': switch_ip})
+                    self.replay_config(switch_ip)
+                    self._mdriver.set_switch_ip_and_active_state(
+                        switch_ip, True)
+
+
 class CiscoNexusMechanismDriver(api.MechanismDriver):
 
     """Cisco Nexus ML2 Mechanism Driver."""
@@ -48,8 +129,44 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
         # Extract configuration parameters from the configuration file.
         self._nexus_switches = conf.ML2MechCiscoConfig.nexus_dict
         LOG.debug(_("nexus_switches found = %s"), self._nexus_switches)
+        # Save dynamic switch information
+        self._switch_state = {}
 
         self.driver = nexus_network_driver.CiscoNexusDriver()
+
+        self.monitor = CiscoNexusCfgMonitor(self.driver, self)
+        self.timer = None
+        self.monitor_timeout = conf.cfg.CONF.ml2_cisco.switch_heartbeat_time
+        self.monitor_lock = threading.Lock()
+        # Start the monitor thread
+        if self.monitor_timeout > 0:
+            self._monitor_thread()
+
+    def set_switch_ip_and_active_state(self, switch_ip, state):
+        self._switch_state[switch_ip, '_connect_active'] = state
+
+    def get_switch_ip_and_active_state(self, switch_ip):
+        if (switch_ip, '_connect_active') in self._switch_state:
+            return self._switch_state[switch_ip, '_connect_active']
+        else:
+            return False
+
+    def set_switch_nexus_type(self, switch_ip, type):
+        self._switch_state[switch_ip, '_nexus_type'] = type
+
+    def get_switch_nexus_type(self, switch_ip):
+        if (switch_ip, '_nexus_type') in self._switch_state:
+            return self._switch_state[switch_ip, '_nexus_type']
+        else:
+            return -1
+
+    def get_switch_state(self):
+        switch_connections = []
+        for switch_ip, attr in self._switch_state:
+            if str(attr) == '_connect_active':
+                switch_connections.append(switch_ip)
+
+        return switch_connections
 
     def _valid_network_segment(self, segment):
         return (cfg.CONF.ml2_cisco.managed_physical_network is None or
@@ -87,6 +204,14 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             return host_connections
         else:
             raise excep.NexusComputeHostNotConfigured(host=host_id)
+
+    def get_switch_ips(self):
+        switch_connections = []
+        for switch_ip, attr in self._nexus_switches:
+            if str(attr) == 'username':
+                switch_connections.append(switch_ip)
+
+        return switch_connections
 
     def _get_switch_nve_info(self, host_id):
         host_nve_connections = []
@@ -173,18 +298,19 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
         for switch_ip, intf_type, nexus_port in host_connections:
             port_id = '%s:%s' % (intf_type, nexus_port)
             nxos_db.add_nexusport_binding(port_id, str(vlan_id), str(vni),
-                                          switch_ip, device_id)
+                                          switch_ip, device_id,
+                                          is_provider_vlan)
 
-    def _configure_switch_entry(self, vlan_id, device_id, host_id, vni,
-                                is_provider_vlan):
-        """Create a nexus switch entry.
+    def _configure_port_binding(self, is_provider_vlan, duplicate_type,
+                                switch_ip, vlan_id,
+                                intf_type, nexus_port, vni):
+        """Conditionally calls vlan and port Nexus drivers."""
 
-        if needed, create a VLAN in the appropriate switch/port and
-        configure the appropriate interfaces for this VLAN.
+        # This implies VLAN, VNI, and Port are all duplicate.
+        # Then there is nothing to configure in Nexus.
+        if duplicate_type == const.DUPLICATE_PORT:
+            return
 
-        Called during update postcommit port event.
-        """
-        host_connections = self._get_switch_info(host_id)
         if is_provider_vlan:
             vlan_name = cfg.CONF.ml2_cisco.provider_vlan_name_prefix
             auto_create = cfg.CONF.ml2_cisco.provider_vlan_auto_create
@@ -198,6 +324,34 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             vlan_name = vlan_name[:vlan_name_max_len]
             LOG.warn(_LW("Nexus: truncating vlan name to %s"), vlan_name)
         vlan_name = vlan_name + str(vlan_id)
+
+        # if type DUPLICATE_VLAN, don't create vlan
+        if duplicate_type == const.DUPLICATE_VLAN:
+            auto_create = False
+
+        if auto_create and auto_trunk:
+            LOG.debug("Nexus: create & trunk vlan %s"), vlan_name
+            self.driver.create_and_trunk_vlan(
+                switch_ip, vlan_id, vlan_name, intf_type, nexus_port,
+                vni)
+        elif auto_create:
+            LOG.debug("Nexus: create vlan %s"), vlan_name
+            self.driver.create_vlan(switch_ip, vlan_id, vlan_name, vni)
+        elif auto_trunk:
+            LOG.debug("Nexus: trunk vlan %s"), vlan_name
+            self.driver.enable_vlan_on_trunk_int(switch_ip, vlan_id,
+                intf_type, nexus_port)
+
+    def _configure_host_entries(self, vlan_id, device_id, host_id, vni,
+                                is_provider_vlan):
+        """Create a nexus switch entry.
+
+        if needed, create a VLAN in the appropriate switch or port and
+        configure the appropriate interfaces for this VLAN.
+
+        Called during update postcommit port event.
+        """
+        host_connections = self._get_switch_info(host_id)
 
         # (nexus_port,switch_ip) will be unique in each iteration.
         # But switch_ip will repeat if host has >1 connection to same switch.
@@ -215,24 +369,64 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             previous_bindings = [row for row in all_bindings
                     if row.instance_id != device_id]
             if previous_bindings or (switch_ip in vlan_already_created):
-                if auto_trunk:
-                    LOG.debug("Nexus: trunk vlan %s"), vlan_name
-                    self.driver.enable_vlan_on_trunk_int(switch_ip, vlan_id,
-                                                         intf_type, nexus_port)
+                self._configure_port_binding(is_provider_vlan,
+                                const.DUPLICATE_VLAN,
+                                switch_ip, vlan_id,
+                                intf_type, nexus_port,
+                                vni)
             else:
                 vlan_already_created.append(switch_ip)
-                if auto_create and auto_trunk:
-                    LOG.debug("Nexus: create & trunk vlan %s"), vlan_name
-                    self.driver.create_and_trunk_vlan(
-                        switch_ip, vlan_id, vlan_name, intf_type, nexus_port,
-                        vni)
-                elif auto_create:
-                    LOG.debug("Nexus: create vlan %s"), vlan_name
-                    self.driver.create_vlan(switch_ip, vlan_id, vlan_name, vni)
-                elif auto_trunk:
-                    LOG.debug("Nexus: trunk vlan %s"), vlan_name
-                    self.driver.enable_vlan_on_trunk_int(switch_ip, vlan_id,
-                        intf_type, nexus_port)
+                self._configure_port_binding(is_provider_vlan,
+                                const.NO_DUPLICATE,
+                                switch_ip, vlan_id,
+                                intf_type, nexus_port,
+                                vni)
+
+    def configure_switch_entries(self, switch_ip, port_bindings):
+        """Create a nexus switch entry in Nexus.
+
+        The port_bindings is sorted by vlan_id, vni, port_id.
+        When there is a change in vlan_id or vni, then vlan
+        data is configured in Nexus device.
+        Otherwise we check if there is a change in port_id
+        where we configure the port with vlan trunk config.
+
+        Called during switch replay event.
+        """
+        prev_vlan = -1
+        prev_vni = -1
+        prev_port = None
+        port_bindings.sort(key=lambda x: (x.vlan_id, x.vni, x.port_id))
+        for port in port_bindings:
+            if ':' in port.port_id:
+                intf_type, nexus_port = port.port_id.split(':')
+            else:
+                intf_type, nexus_port = 'ethernet', port.port_id
+            if port.vlan_id == prev_vlan and port.vni == prev_vni:
+                duplicate_type = const.DUPLICATE_VLAN
+                if port.port_id == prev_port:
+                    duplicate_type = const.DUPLICATE_PORT
+            else:
+                duplicate_type = const.NO_DUPLICATE
+            try:
+                self._configure_port_binding(
+                    port.is_provider_vlan, duplicate_type,
+                    switch_ip, port.vlan_id,
+                    intf_type, nexus_port,
+                    port.vni)
+            except Exception as e:
+                LOG.debug(_("Failed to configure port binding "
+                    "for switch %(switch_ip)s, vlan %(vlan)s "
+                    "vni %(vni)s, port %(port)s, "
+                    "reason %(reason)s"),
+                    {'switch_ip': switch_ip,
+                     'vlan': port.vlan_id,
+                     'vni': port.vni,
+                     'port': port.port_id,
+                     'reason': e})
+            prev_vlan = port.vlan_id
+            prev_vni = port.vni
+            prev_port = port.port_id
 
     def _delete_nxos_db(self, vlan_id, device_id, host_id, vni,
                         is_provider_vlan):
@@ -244,7 +438,8 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             rows = nxos_db.get_nexusvm_bindings(vlan_id, device_id)
             for row in rows:
                 nxos_db.remove_nexusport_binding(row.port_id, row.vlan_id,
-                                    row.vni, row.switch_ip, row.instance_id)
+                                    row.vni, row.switch_ip, row.instance_id,
+                                    row.is_provider_vlan)
         except excep.NexusPortBindingNotFound:
             return
 
@@ -359,6 +554,21 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             fields += "host_id" if not host_id else ""
             raise excep.NexusMissingRequiredFields(fields=fields)
 
+    def _monitor_thread(self):
+        """Periodically restarts the monitor thread."""
+        with self.monitor_lock:
+            self.monitor.check_connections()
+
+        self.timer = threading.Timer(self.monitor_timeout,
+                                     self._monitor_thread)
+        self.timer.start()
+
+    def _stop_monitor_thread(self):
+        """Terminates the monitor thread."""
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+
     @lockutils.synchronized('cisco-nexus-portlock')
     def update_port_precommit(self, context):
         """Update port pre-database transaction commit event."""
@@ -407,7 +617,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
                 vni = self._port_action_vxlan(context.current, vxlan_segment,
                             self._configure_nve_member) if vxlan_segment else 0
                 self._port_action_vlan(context.current, vlan_segment,
-                                       self._configure_switch_entry, vni)
+                                       self._configure_host_entries, vni)
 
     @lockutils.synchronized('cisco-nexus-portlock')
     def delete_port_precommit(self, context):

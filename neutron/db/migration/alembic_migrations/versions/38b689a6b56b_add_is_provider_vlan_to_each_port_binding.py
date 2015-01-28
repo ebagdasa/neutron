@@ -1,5 +1,4 @@
-# Copyright 2011 OpenStack Foundation.
-# All rights reserved.
+# Copyright 2015 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,24 +13,27 @@
 #    under the License.
 #
 
+"""Add is_provider_vlan to each port binding
 
-CREDENTIAL_USERNAME = 'user_name'
-CREDENTIAL_PASSWORD = 'password'
+Revision ID: 38b689a6b56b
+Revises: 796c68dffbb
+Create Date: 2015-02-03 16:51:27.244045
 
-USERNAME = 'username'
-PASSWORD = 'password'
+"""
 
-NETWORK_ADMIN = 'network_admin'
+# revision identifiers, used by Alembic.
+revision = '38b689a6b56b'
+down_revision = '796c68dffbb'
 
-NVE_INT_NUM = '1'
-NEXUS_MAX_VLAN_NAME_LEN = 32
+from alembic import op
+import sqlalchemy as sa
 
-NO_DUPLICATE = 0
-DUPLICATE_VLAN = 1
-DUPLICATE_PORT = 2
 
-NEXUS_TYPE_INVALID = -1
-NEXUS_3K = 3
-NEXUS_5K = 5
-NEXUS_7K = 7
-NEXUS_9K = 9
+def upgrade():
+    op.add_column('cisco_ml2_nexusport_bindings', sa.Column(
+        'is_provider_vlan', sa.Boolean(), nullable=False,
+        server_default=sa.sql.false()))
+
+
+def downgrade():
+    op.drop_column('cisco_ml2_nexusport_bindings', 'is_provider_vlan')
