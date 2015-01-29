@@ -309,8 +309,17 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             return (context.current.get(portbindings.HOST_ID) !=
                     context.original.get(portbindings.HOST_ID))
 
+    def _log_missing_fields(self):
+        LOG.warn(_LW("Nexus: Segment is None, Event not processed."))
+
     def _port_action_vlan(self, port, segment, func, vni):
         """Verify configuration and then process event."""
+
+        # If the segment is None, just log a warning message and return.
+        if segment is None:
+            self._log_missing_fields()
+            return
+
         device_id = port.get('device_id')
         host_id = port.get(portbindings.HOST_ID)
         vlan_id, is_provider = self._get_vlan_info(segment)
@@ -328,6 +337,12 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
 
     def _port_action_vxlan(self, port, segment, func):
         """Verify configuration and then process event."""
+
+        # If the segment is None, just log a warning message and return.
+        if segment is None:
+            self._log_missing_fields()
+            return
+
         device_id = port.get('device_id')
         mcast_group = segment.get(api.PHYSICAL_NETWORK)
         host_id = port.get(portbindings.HOST_ID)

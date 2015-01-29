@@ -860,13 +860,15 @@ class TestCiscoPortsV2(CiscoML2MechanismTestCase,
     def test_nexus_segment_none(self):
         """Test handling of segment is None.
 
-        Verify the port_action method handles when the segment is None.
+        Verify that None segments do not throw an exception in
+        _port_action_xxx. None segments passed to the event handlers are
+        logged and are not processed.
+
         """
         self.mock_top_bound_segment.return_value = None
         with self._create_resources(name='net1', cidr=CIDR_1,
                                     expected_failure=True) as result:
-            self._assertExpectedHTTP(result.status_int,
-                                     c_exc.NexusMissingRequiredFields)
+            self.assertEqual(result.status_int, wexc.HTTPOk.code)
 
     def test_nexus_vxlan_bind_port(self):
         """Test VXLAN bind_port method processing.
