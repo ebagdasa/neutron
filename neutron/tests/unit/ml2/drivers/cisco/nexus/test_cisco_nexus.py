@@ -48,7 +48,8 @@ VLAN_ID_1 = 267
 VLAN_ID_2 = 265
 VLAN_ID_PC = 268
 VLAN_ID_DUAL = 269
-DEVICE_OWNER = 'compute:test'
+DEVICE_OWNER_COMPUTE = 'compute:test'
+DEVICE_OWNER_DHCP = n_const.DEVICE_OWNER_DHCP
 NEXUS_SSH_PORT = '22'
 PORT_STATE = n_const.PORT_STATUS_ACTIVE
 NETWORK_TYPE = 'vlan'
@@ -74,11 +75,11 @@ class FakePortContext(object):
 
     """Port context for testing purposes only."""
 
-    def __init__(self, device_id, host_name, network_context):
+    def __init__(self, device_id, host_name, device_owner, network_context):
         self._port = {
             'status': PORT_STATE,
             'device_id': device_id,
-            'device_owner': DEVICE_OWNER,
+            'device_owner': device_owner,
             portbindings.HOST_ID: host_name,
             portbindings.VIF_TYPE: portbindings.VIF_TYPE_OVS
         }
@@ -116,7 +117,7 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
 
     TestConfigObj = collections.namedtuple(
         'TestConfigObj',
-        'nexus_ip_addr host_name nexus_port instance_id vlan_id')
+        'nexus_ip_addr host_name nexus_port instance_id vlan_id device_owner')
 
     test_configs = {
         'test_config1': TestConfigObj(
@@ -124,25 +125,36 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
             HOST_NAME_1,
             NEXUS_PORT_1,
             INSTANCE_1,
-            VLAN_ID_1),
+            VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
         'test_config2': TestConfigObj(
             NEXUS_IP_ADDRESS,
             HOST_NAME_2,
             NEXUS_PORT_2,
             INSTANCE_2,
-            VLAN_ID_2),
+            VLAN_ID_2,
+            DEVICE_OWNER_COMPUTE),
         'test_config_portchannel': TestConfigObj(
             NEXUS_IP_ADDRESS_PC,
             HOST_NAME_PC,
             NEXUS_PORTCHANNELS,
             INSTANCE_PC,
-            VLAN_ID_PC),
+            VLAN_ID_PC,
+            DEVICE_OWNER_COMPUTE),
         'test_config_dual': TestConfigObj(
             NEXUS_IP_ADDRESS_DUAL,
             HOST_NAME_DUAL,
             NEXUS_DUAL,
             INSTANCE_DUAL,
-            VLAN_ID_DUAL),
+            VLAN_ID_DUAL,
+            DEVICE_OWNER_COMPUTE),
+        'test_config_dhcp': TestConfigObj(
+            NEXUS_IP_ADDRESS,
+            HOST_NAME_1,
+            NEXUS_PORT_1,
+            INSTANCE_1,
+            VLAN_ID_1,
+            DEVICE_OWNER_DHCP),
     }
 
     def setUp(self):
@@ -188,9 +200,10 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         nexus_port = port_config.nexus_port
         instance_id = port_config.instance_id
         vlan_id = port_config.vlan_id
+        device_owner = port_config.device_owner
 
         network_context = FakeNetworkContext(vlan_id)
-        port_context = FakePortContext(instance_id, host_name,
+        port_context = FakePortContext(instance_id, host_name, device_owner,
                                        network_context)
 
         self._cisco_mech_driver.update_port_precommit(port_context)
@@ -229,3 +242,8 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         """Tests creation and deletion of dual ports for single server"""
         self._create_delete_port(
             TestCiscoNexusDevice.test_configs['test_config_dual'])
+
+    def test_create_delete_dhcp(self):
+        """Tests creation and deletion of ports with device_owner of dhcp."""
+        self._create_delete_port(
+            TestCiscoNexusDevice.test_configs['test_config_dhcp'])
