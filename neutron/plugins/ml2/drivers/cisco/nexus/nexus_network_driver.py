@@ -68,7 +68,8 @@ class CiscoNexusDriver(object):
                     mgr.close_session()
             except Exception:
                 pass
-            raise cexc.NexusConfigFailed(config=filter, exc=e)
+            raise cexc.NexusConfigFailed(nexus_host=nexus_host, config=filter,
+                                         exc=e)
 
     def _edit_config(self, nexus_host, target='running', config='',
                      allowed_exc_strs=None):
@@ -108,7 +109,8 @@ class CiscoNexusDriver(object):
 
             # Raise a Neutron exception. Include a description of
             # the original ncclient exception.
-            raise cexc.NexusConfigFailed(config=config, exc=e)
+            raise cexc.NexusConfigFailed(nexus_host=nexus_host, config=config,
+                                         exc=e)
 
     def nxos_connect(self, nexus_host):
         """Make SSH connection to the Nexus Switch."""

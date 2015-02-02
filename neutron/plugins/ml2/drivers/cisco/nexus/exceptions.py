@@ -46,7 +46,8 @@ class NexusConnectFailed(exceptions.NeutronException):
 
 class NexusConfigFailed(exceptions.NeutronException):
     """Failed to configure Nexus switch."""
-    message = _("Failed to configure Nexus: %(config)s. Reason: %(exc)s.")
+    message = _("Failed to configure Nexus switch: %(nexus_host)s "
+                "XML: %(config)s. Reason: %(exc)s.")
 
 
 class NexusPortBindingNotFound(exceptions.NeutronException):
