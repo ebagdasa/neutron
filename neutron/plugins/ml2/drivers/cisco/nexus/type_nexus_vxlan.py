@@ -19,12 +19,14 @@ import netaddr
 from oslo.config import cfg
 import sqlalchemy as sa
 
+from neutron.common import constants as n_const
 from neutron.common import exceptions as exc
 from neutron.db import api as db_api
 from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.openstack.common import excutils
 from neutron.openstack.common.gettextutils import _LE
+from neutron.openstack.common.gettextutils import _LI
 from neutron.openstack.common import log
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2 import driver_api as api
@@ -32,7 +34,8 @@ from neutron.plugins.ml2.drivers import type_tunnel
 
 LOG = log.getLogger(__name__)
 
-MAX_VXLAN_VNI = 16777215
+# Nexus switches start VNI at 4096 = max VLAN + 2 (2 for reserved VLAN 0, 4095)
+MIN_NEXUS_VNI = n_const.MAX_VLAN_TAG + 2
 
 nexus_vxlan_opts = [
     cfg.ListOpt('vni_ranges',
@@ -87,8 +90,53 @@ class NexusVxlanTypeDriver(type_tunnel.TunnelTypeDriver):
     def initialize(self):
         self.tunnel_ranges = []
         self.conf_mcast_ranges = cfg.CONF.ml2_type_nexus_vxlan.mcast_ranges
-        self.conf_vxlan_ranges = cfg.CONF.ml2_type_nexus_vxlan.vni_ranges
-        self._initialize(self.conf_vxlan_ranges)
+        self._verify_vni_ranges()
+        self.sync_allocations()
+
+    def _verify_vni_ranges(self):
+        try:
+            self.conf_vxlan_ranges = self._parse_nexus_vni_ranges(
+                cfg.CONF.ml2_type_nexus_vxlan.vni_ranges, self.tunnel_ranges)
+            LOG.info(_LI("Cisco Nexus VNI ranges: %s"), self.conf_vxlan_ranges)
+        except Exception:
+            LOG.exception(_LE("Failed to parse vni_ranges. "
+                              "Service terminated!"))
+            raise SystemExit()
+
+    def _parse_nexus_vni_ranges(self, tunnel_ranges, current_range):
+        for entry in tunnel_ranges:
+            entry = entry.strip()
+            try:
+                tun_min, tun_max = entry.split(':')
+                tun_min = tun_min.strip()
+                tun_max = tun_max.strip()
+                tunnel_range = int(tun_min), int(tun_max)
+            except ValueError as ex:
+                raise exc.NetworkTunnelRangeError(tunnel_range=entry, error=ex)
+
+            self._parse_nexus_vni_range(tunnel_range)
+            current_range.append(tunnel_range)
+
+        LOG.info(_LI("Nexus VXLAN ID ranges: %(range)s"),
+                 {'range': current_range})
+
+    def _parse_nexus_vni_range(self, tunnel_range):
+        """Raise an exception for invalid tunnel range or malformed range."""
+        for ident in tunnel_range:
+            if not self._is_valid_nexus_vni(ident):
+                raise exc.NetworkTunnelRangeError(
+                    tunnel_range=tunnel_range,
+                    error=_("%(id)s is not a valid Nexus VNI value.") %
+                    {'id': ident})
+
+        if tunnel_range[1] < tunnel_range[0]:
+            raise exc.NetworkTunnelRangeError(
+                tunnel_range=tunnel_range,
+                error=_("End of tunnel range is less than start of "
+                        "tunnel range."))
+
+    def _is_valid_nexus_vni(self, vni):
+        return MIN_NEXUS_VNI <= vni <= n_const.MAX_VXLAN_VNI
 
     def _parse_mcast_ranges(self):
         ranges = (range.split(':') for range in self.conf_mcast_ranges)
@@ -140,12 +188,7 @@ class NexusVxlanTypeDriver(type_tunnel.TunnelTypeDriver):
         # determine current configured allocatable vnis
         vxlan_vnis = set()
         for tun_min, tun_max in self.tunnel_ranges:
-            if tun_max + 1 - tun_min > MAX_VXLAN_VNI:
-                LOG.error(_("Skipping unreasonable VXLAN VNI range "
-                            "%(tun_min)s:%(tun_max)s"),
-                          {'tun_min': tun_min, 'tun_max': tun_max})
-            else:
-                vxlan_vnis |= set(xrange(tun_min, tun_max + 1))
+            vxlan_vnis |= set(xrange(tun_min, tun_max + 1))
 
         session = db_api.get_session()
         with session.begin(subtransactions=True):

@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron.common import constants as n_const
 import neutron.db.api as db
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2 import driver_api as api
@@ -20,6 +21,10 @@ from neutron.plugins.ml2.drivers.cisco.nexus import type_nexus_vxlan
 from neutron.tests.unit import testlib_api
 
 VNI_RANGES = [(100, 102), (200, 202)]
+VNI_RANGE_LOW_INVALID = [str(type_nexus_vxlan.MIN_NEXUS_VNI - 1) + ':' +
+                         str(n_const.MAX_VXLAN_VNI)]
+VNI_RANGE_HIGH_INVALID = [str(type_nexus_vxlan.MIN_NEXUS_VNI) + ':' +
+                          str(n_const.MAX_VXLAN_VNI + 1)]
 MCAST_GROUP_RANGES = ['224.0.0.1:224.0.0.2', '224.0.1.1:224.0.1.2']
 
 
@@ -77,3 +82,11 @@ class NexusVxlanTypeTest(testlib_api.SqlTestCase):
         self.assertTrue(alloc.allocated)
         self.assertEqual(alloc.vxlan_vni, 100)
         self.assertEqual(mcast_group, '224.0.0.1')
+
+    def test_invalid_vni_ranges(self):
+        for invalid_vni_range in [VNI_RANGE_LOW_INVALID,
+                                  VNI_RANGE_HIGH_INVALID]:
+            type_nexus_vxlan.cfg.CONF.set_override('vni_ranges',
+                                                   invalid_vni_range,
+                                                   'ml2_type_nexus_vxlan')
+            self.assertRaises(SystemExit, self.driver._verify_vni_ranges)
