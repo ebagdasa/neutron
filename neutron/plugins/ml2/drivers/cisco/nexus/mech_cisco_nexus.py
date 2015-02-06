@@ -64,8 +64,9 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
         else:
             return None, None
 
-    def _is_deviceowner_compute(self, port):
-        return port['device_owner'].startswith('compute')
+    def _is_supported_deviceowner(self, port):
+        return (port['device_owner'].startswith('compute') or
+                port['device_owner'] == n_const.DEVICE_OWNER_DHCP)
 
     def _is_status_active(self, port):
         return port['status'] == n_const.PORT_STATUS_ACTIVE
@@ -376,7 +377,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             self._port_action_vlan(context.original, orig_vlan_segment,
                                    self._delete_nxos_db, vni)
         else:
-            if (self._is_deviceowner_compute(context.current) and
+            if (self._is_supported_deviceowner(context.current) and
                 self._is_status_active(context.current)):
                 vni = self._port_action_vxlan(context.current, vxlan_segment,
                             self._configure_nve_db) if vxlan_segment else 0
@@ -401,7 +402,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             self._port_action_vlan(context.original, orig_vlan_segment,
                                    self._delete_switch_entry, vni)
         else:
-            if (self._is_deviceowner_compute(context.current) and
+            if (self._is_supported_deviceowner(context.current) and
                 self._is_status_active(context.current)):
                 vni = self._port_action_vxlan(context.current, vxlan_segment,
                             self._configure_nve_member) if vxlan_segment else 0
@@ -411,7 +412,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
     @lockutils.synchronized('cisco-nexus-portlock')
     def delete_port_precommit(self, context):
         """Delete port pre-database commit event."""
-        if self._is_deviceowner_compute(context.current):
+        if self._is_supported_deviceowner(context.current):
             vlan_segment, vxlan_segment = self._get_segments(
                                                 context.top_bound_segment,
                                                 context.bottom_bound_segment)
@@ -423,7 +424,7 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
     @lockutils.synchronized('cisco-nexus-portlock')
     def delete_port_postcommit(self, context):
         """Delete port non-database commit event."""
-        if self._is_deviceowner_compute(context.current):
+        if self._is_supported_deviceowner(context.current):
             vlan_segment, vxlan_segment = self._get_segments(
                                                 context.top_bound_segment,
                                                 context.bottom_bound_segment)
