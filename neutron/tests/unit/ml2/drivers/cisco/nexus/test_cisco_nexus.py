@@ -135,6 +135,13 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
             INSTANCE_2,
             VLAN_ID_2,
             DEVICE_OWNER_COMPUTE),
+        'test_config3': TestConfigObj(
+            NEXUS_IP_ADDRESS,
+            HOST_NAME_1,
+            NEXUS_PORT_1,
+            INSTANCE_2,
+            VLAN_ID_1,
+            DEVICE_OWNER_COMPUTE),
         'test_config_portchannel': TestConfigObj(
             NEXUS_IP_ADDRESS_PC,
             HOST_NAME_PC,
@@ -163,12 +170,12 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         super(TestCiscoNexusDevice, self).setUp()
 
         # Use a mock netconf client
-        mock_ncclient = mock.Mock()
+        self.mock_ncclient = mock.Mock()
         mock.patch.object(nexus_network_driver.CiscoNexusDriver,
                           '_import_ncclient',
-                          return_value=mock_ncclient).start()
+                          return_value=self.mock_ncclient).start()
         data_xml = {'connect.return_value.get.return_value.data_xml': ''}
-        mock_ncclient.configure_mock(**data_xml)
+        self.mock_ncclient.configure_mock(**data_xml)
 
         def new_nexus_init(mech_instance):
             mech_instance.driver = importutils.import_object(NEXUS_DRIVER)
@@ -194,7 +201,25 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         self._cisco_mech_driver = (mech_cisco_nexus.
                                    CiscoNexusMechanismDriver())
 
-    def _create_delete_port(self, port_config):
+    def _verify_results(self, driver_result):
+        """Verifies correct entries sent to Nexus."""
+
+        self.assertEqual(self.mock_ncclient.connect.return_value.
+            edit_config.call_count,
+            len(driver_result),
+            "Unexpected driver count")
+
+        for idx in xrange(0, len(driver_result)):
+            self.assertNotEqual(self.mock_ncclient.connect.
+                return_value.edit_config.mock_calls[idx][2]['config'],
+                None, "mock_data is None")
+            self.assertNotEqual(
+                re.search(driver_result[idx],
+                    self.mock_ncclient.connect.return_value.
+                    edit_config.mock_calls[idx][2]['config']),
+                None, "Expected result data not found")
+
+    def _create_port(self, port_config):
         """Tests creation and deletion of a virtual port."""
         nexus_ip_addr = port_config.nexus_ip_addr
         host_name = port_config.host_name
@@ -216,6 +241,19 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
                                                          instance_id)
             self.assertEqual(len(bindings), 1)
 
+    def _delete_port(self, port_config):
+        """Tests creation and deletion of a virtual port."""
+        nexus_ip_addr = port_config.nexus_ip_addr
+        host_name = port_config.host_name
+        nexus_port = port_config.nexus_port
+        instance_id = port_config.instance_id
+        vlan_id = port_config.vlan_id
+        device_owner = port_config.device_owner
+
+        network_context = FakeNetworkContext(vlan_id)
+        port_context = FakePortContext(instance_id, host_name, device_owner,
+                                       network_context)
+
         self._cisco_mech_driver.delete_port_precommit(port_context)
         self._cisco_mech_driver.delete_port_postcommit(port_context)
         for port_id in nexus_port.split(','):
@@ -226,6 +264,11 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
                                                   nexus_ip_addr,
                                                   instance_id)
 
+    def _create_delete_port(self, port_config):
+        """Tests creation and deletion of a virtual port."""
+        self._create_port(port_config)
+        self._delete_port(port_config)
+
     def test_create_delete_ports(self):
         """Tests creation and deletion of two new virtual Ports."""
         self._create_delete_port(
@@ -233,6 +276,53 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
 
         self._create_delete_port(
             TestCiscoNexusDevice.test_configs['test_config2'])
+
+    def test_create_delete_duplicate_ports(self):
+        """Tests creation and deletion of two new virtual Ports."""
+        duplicate_add_port_driver_result = [
+            '\<vlan\-name\>q\-267\<\/vlan\-name>',
+            '\<vstate\>active\<\/vstate>',
+            '\<no\>\s+\<shutdown\/\>\s+\<\/no\>',
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e]+\s+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<vlan_id\>267',
+        ]
+        duplicate_delete_port_driver_result = [
+            '\<interface\>1\/10\<\/interface\>\s+'
+            '[\x20-\x7e\s]+\<switchport\>\s+\<trunk\>\s+'
+            '\<allowed\>\s+\<vlan\>\s+\<remove\>\s+\<vlan\>267',
+            '\<no\>\s+\<vlan\>\s+<vlan-id-create-delete\>'
+            '\s+\<__XML__PARAM_value\>267',
+        ]
+
+        self._create_port(
+            TestCiscoNexusDevice.test_configs['test_config1'])
+        # verify first config was indeed configured
+        self._verify_results(duplicate_add_port_driver_result)
+
+        self._create_port(
+            TestCiscoNexusDevice.test_configs['test_config3'])
+        # verify only the first config was applied
+        self._verify_results(duplicate_add_port_driver_result)
+
+        # Verify there are 2 port configs
+        bindings = nexus_db_v2.get_nexusvlan_binding(VLAN_ID_1,
+                                                     NEXUS_IP_ADDRESS)
+        self.assertEqual(len(bindings), 2)
+
+        # Clean all the ncclient mock_calls so we can evaluate
+        # results of delete operations.
+        self.mock_ncclient.reset_mock()
+
+        self._delete_port(
+            TestCiscoNexusDevice.test_configs['test_config1'])
+        # Using empty list verify no nexus action on first port removal
+        self._verify_results([])
+
+        self._delete_port(
+            TestCiscoNexusDevice.test_configs['test_config3'])
+        # verify port removed on 2nd port delete
+        self._verify_results(duplicate_delete_port_driver_result)
 
     def test_create_delete_portchannel(self):
         """Tests creation of a port over a portchannel."""

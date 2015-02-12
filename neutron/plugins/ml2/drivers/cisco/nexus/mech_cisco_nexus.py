@@ -368,19 +368,21 @@ class CiscoNexusMechanismDriver(api.MechanismDriver):
             all_bindings = nxos_db.get_nexusvlan_binding(vlan_id, switch_ip)
             previous_bindings = [row for row in all_bindings
                     if row.instance_id != device_id]
-            if previous_bindings or (switch_ip in vlan_already_created):
-                self._configure_port_binding(is_provider_vlan,
-                                const.DUPLICATE_VLAN,
-                                switch_ip, vlan_id,
-                                intf_type, nexus_port,
-                                vni)
+            duplicate_port = [row for row in all_bindings
+                    if row.instance_id != device_id and
+                    row.port_id == intf_type + ':' + nexus_port]
+            if duplicate_port:
+                duplicate_type = const.DUPLICATE_PORT
+            elif previous_bindings or (switch_ip in vlan_already_created):
+                duplicate_type = const.DUPLICATE_VLAN
             else:
                 vlan_already_created.append(switch_ip)
-                self._configure_port_binding(is_provider_vlan,
-                                const.NO_DUPLICATE,
-                                switch_ip, vlan_id,
-                                intf_type, nexus_port,
-                                vni)
+                duplicate_type = const.NO_DUPLICATE
+            self._configure_port_binding(is_provider_vlan,
+                            duplicate_type,
+                            switch_ip, vlan_id,
+                            intf_type, nexus_port,
+                            vni)
 
     def configure_switch_entries(self, switch_ip, port_bindings):
         """Create a nexus switch entry in Nexus.
