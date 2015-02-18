@@ -29,6 +29,7 @@ from neutron.plugins.ml2.drivers.cisco.nexus import nexus_db_v2
 from neutron.plugins.ml2.drivers.cisco.nexus import nexus_network_driver
 from neutron.tests.unit import testlib_api
 
+CONNECT_ERROR = 'Unable to connect to Nexus'
 
 NEXUS_IP_ADDRESS = '1.1.1.1'
 NEXUS_IP_ADDRESS_PC = '2.2.2.2'
@@ -338,6 +339,18 @@ class TestCiscoNexusDevice(testlib_api.SqlTestCase):
         """Tests creation and deletion of ports with device_owner of dhcp."""
         self._create_delete_port(
             TestCiscoNexusDevice.test_configs['test_config_dhcp'])
+
+    def test_connect_failure(self):
+        """Verifies exception handling during ncclient connect. """
+
+        config = {'connect.side_effect': Exception(CONNECT_ERROR)}
+        self.mock_ncclient.configure_mock(**config)
+
+        e = self.assertRaises(exceptions.NexusConfigFailed,
+                              self._create_port,
+                              TestCiscoNexusDevice.test_configs[
+                                  'test_config1'])
+        self.assertIn(CONNECT_ERROR, unicode(e))
 
 
 RP_NEXUS_IP_ADDRESS_1 = '1.1.1.1'

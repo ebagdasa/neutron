@@ -58,6 +58,9 @@ class CiscoNexusDriver(object):
 
            """
         try:
+            # If exception raised in connect, mgr left unassigned
+            # resulting in error during exception handling
+            mgr = None
             mgr = self.nxos_connect(nexus_host)
             data_xml = mgr.get(filter=('subtree', filter)).data_xml
             return data_xml
@@ -93,12 +96,16 @@ class CiscoNexusDriver(object):
         if not allowed_exc_strs:
             allowed_exc_strs = []
         try:
+            # If exception raised in connect, mgr left unassigned
+            # resulting in error during exception handling
+            mgr = None
             mgr = self.nxos_connect(nexus_host)
             LOG.debug("NexusDriver config: %s", config)
-            mgr.edit_config(target=target, config=config)
+            if mgr:
+                mgr.edit_config(target=target, config=config)
         except Exception as e:
             for exc_str in allowed_exc_strs:
-                if exc_str in str(e):
+                if exc_str in unicode(e):
                     return e
             try:
                 if mgr:
