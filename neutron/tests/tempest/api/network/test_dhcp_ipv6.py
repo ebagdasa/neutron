@@ -41,6 +41,7 @@ class NetworksTestDHCPv6(base.BaseNetworkTest):
 
     @classmethod
     def skip_checks(cls):
+        super(NetworksTestDHCPv6, cls).skip_checks()
         msg = None
         if not CONF.network_feature_enabled.ipv6:
             msg = "IPv6 is not enabled"
@@ -377,6 +378,18 @@ class NetworksTestDHCPv6(base.BaseNetworkTest):
         body = self.client.show_port(port['port_id'])
         return subnet, body['port']
 
+    def _create_custom_subnet(self, kwargs):
+        # The gateway is not set when creating this subnet
+        net_cidr = netaddr.IPNetwork(CONF.network.tenant_network_v6_cidr)
+        mask_bits = CONF.network.tenant_network_v6_mask_bits
+        cidr = str(next(iter(net_cidr.subnet(mask_bits))))
+        kwargs.update({
+            'network_id': self.network['id'],
+            'cidr': cidr})
+        body = self.client.create_subnet(**kwargs)
+        self.subnets.append(body['subnet'])
+        return body['subnet']
+
     @test.idempotent_id('e98f65db-68f4-4330-9fea-abd8c5192d4d')
     def test_dhcp_stateful_router(self):
         """With all options below the router interface shall
@@ -396,6 +409,70 @@ class NetworksTestDHCPv6(base.BaseNetworkTest):
                              ("Port IP %s is not as first IP from "
                               "subnets allocation pool: %s") % (
                                  port_ip, subnet['gateway_ip']))
+
+    def test_dhcp_stateless_router_explicit_gw(self):
+        """With all options below the router interface shall
+        receive first allocated address from created subnet,
+        because gateway is set explicitly to particular IP in
+        'create_subnet' function. All ports however receive
+        SLAAC addresses.
+        """
+        for ra_mode, add_mode in (
+                ('dhcpv6-stateless', 'dhcpv6-stateless'),
+                ('slaac', 'slaac')
+        ):
+            kwargs = {'ipv6_ra_mode': ra_mode,
+                      'ipv6_address_mode': add_mode}
+            subnet, router_port = self._create_subnet_router(kwargs)
+            router_port_ip = router_port['fixed_ips'][0]['ip_address']
+            port = self.create_port(self.network)
+            port_ip = port['fixed_ips'][0]['ip_address']
+            self._clean_network()
+            eui64_ip = data_utils.get_ipv6_addr_by_EUI64(
+                subnet['cidr'],
+                port['mac_address']).format()
+            self.assertEqual(port_ip, eui64_ip,
+                             ("Port IP %s is not the same as EUI64 "
+                              "address: %s") % (port_ip, eui64_ip))
+            self.assertEqual(router_port_ip, subnet['gateway_ip'],
+                             ("Router IP %s is not as gateway IP from "
+                              "subnets data: %s") % (
+                                 router_port_ip, subnet['gateway_ip']))
+
+    def test_dhcp_stateless_router_default_gw(self):
+        """With all options below the router interface shall
+        receive default address of subnet gateway, because gateway
+        is not set explicitly in local function '_create_custom_subnet'.
+        All ports however receive SLAAC addresses.
+        """
+        for ra_mode, add_mode in (
+                ('dhcpv6-stateless', 'dhcpv6-stateless'),
+                ('slaac', 'slaac')
+        ):
+            kwargs = {'ipv6_ra_mode': ra_mode,
+                      'ipv6_address_mode': add_mode,
+                      'ip_version': 6}
+            subnet = self._create_custom_subnet(kwargs)
+            router = self.create_router(
+                router_name=data_utils.rand_name("routerv6-"),
+                admin_state_up=True)
+            router_port = self.create_router_interface(router['id'],
+                                                       subnet['id'])
+            body = self.client.show_port(router_port['port_id'])
+            router_port_ip = body['port']['fixed_ips'][0]['ip_address']
+            port = self.create_port(self.network)
+            port_ip = port['fixed_ips'][0]['ip_address']
+            self._clean_network()
+            eui64_ip = data_utils.get_ipv6_addr_by_EUI64(
+                subnet['cidr'],
+                port['mac_address']).format()
+            self.assertEqual(port_ip, eui64_ip,
+                             ("Port IP %s is not the same as EUI64 "
+                              "address: %s") % (port_ip, eui64_ip))
+            self.assertEqual(router_port_ip, subnet['gateway_ip'],
+                             ("Router IP %s is not as gateway IP from "
+                              "subnets data: %s") % (
+                                 router_port_ip, subnet['gateway_ip']))
 
     def tearDown(self):
         self._clean_network()
